@@ -1,0 +1,12 @@
+[package]
+name = "clock"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+chrono-tz = "0.10.4"
+eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts", "persistence", "wayland", "x11"] }
+iana-time-zone = "0.1.65"
+resvg = { version = "0.47.0", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }

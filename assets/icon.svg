@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- App tile: near-black squircle matching the clock's background -->
+  <rect x="8" y="8" width="240" height="240" rx="56" ry="56" fill="#0a0b0d"/>
+  <rect x="9" y="9" width="238" height="238" rx="55" ry="55"
+        fill="none" stroke="#f2f2f3" stroke-opacity="0.08" stroke-width="2"/>
+
+  <!-- Clock face ring -->
+  <circle cx="128" cy="128" r="80" fill="none" stroke="#f2f2f3" stroke-width="10"/>
+
+  <!-- 12 o'clock marker: muted amber, echoing the hour-approaching alert -->
+  <circle cx="128" cy="63" r="6" fill="#cb9a3e"/>
+
+  <!-- Hour hand -> 10 o'clock -->
+  <line x1="128" y1="128" x2="90" y2="106" stroke="#f2f2f3" stroke-width="13" stroke-linecap="round"/>
+  <!-- Minute hand -> 2 o'clock -->
+  <line x1="128" y1="128" x2="182" y2="97" stroke="#f2f2f3" stroke-width="11" stroke-linecap="round"/>
+
+  <!-- Center hub -->
+  <circle cx="128" cy="128" r="12" fill="#f2f2f3"/>
+  <circle cx="128" cy="128" r="5" fill="#0a0b0d"/>
+</svg>
