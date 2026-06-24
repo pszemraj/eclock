@@ -14,8 +14,8 @@ use eframe::egui;
 
 fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Clock")
-        .with_app_id("clock")
+        .with_title("eclock")
+        .with_app_id("eclock")
         .with_inner_size([900.0, 520.0])
         .with_min_inner_size([320.0, 200.0]);
 
@@ -32,7 +32,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Clock",
+        "eclock",
         options,
         Box::new(|cc| Ok(Box::new(ClockApp::new(cc)))),
     )

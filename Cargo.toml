@@ -1,7 +1,9 @@
 [package]
-name = "clock"
+name = "eclock"
 version = "0.1.0"
 edition = "2024"
+description = "A minimal, low-power desktop clock built with egui/eframe."
+publish = false
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

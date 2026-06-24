@@ -1,4 +1,4 @@
-# Clock
+# eclock
 
 A minimal, low-power desktop clock built with [egui/eframe](https://github.com/emilk/egui).
 
@@ -24,6 +24,20 @@ Then:
 cargo run --release
 ```
 
+Or build once and run the local binary directly:
+
+```sh
+cargo build --release --locked
+./target/release/eclock
+```
+
+To install it as a local command:
+
+```sh
+cargo install --path . --locked
+eclock
+```
+
 ## Controls
 
 | Key / input | Action |
@@ -46,9 +60,9 @@ The **hourly alert**, when enabled, tints the window border as the top of the ho
 
 Seconds visibility, zoom level, alert on/off, and hint visibility persist between runs. eframe writes them to an `app.ron` file in the per-user data directory:
 
-- **Linux:** `$XDG_DATA_HOME/clock/app.ron` (defaults to `~/.local/share/clock/app.ron`)
-- **macOS:** `~/Library/Application Support/clock/app.ron`
-- **Windows:** `%APPDATA%\clock\data\app.ron`
+- **Linux:** `$XDG_DATA_HOME/eclock/app.ron` (defaults to `~/.local/share/eclock/app.ron`)
+- **macOS:** `~/Library/Application Support/eclock/app.ron`
+- **Windows:** `%APPDATA%\eclock\data\app.ron`
 
 Delete that file to reset everything to defaults.
 
