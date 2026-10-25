@@ -46,9 +46,12 @@ eclock
 
 ## Window and tray
 
-The clock opens visibly and uses a tray icon (the menu bar on macOS) instead
-of a dock or taskbar entry. The tray menu offers **Show eclock**, **Hide eclock**,
-and **Quit**. Closing the window hides it; Quit saves preferences and exits.
+The clock opens visibly. On Linux it has both a tray icon and an ordinary
+dock/taskbar entry so desktop tiling tools can manage it. On macOS it uses a
+menu-bar icon; on Windows it uses a tray icon without a taskbar entry.
+
+The tray menu offers **Show eclock**, **Hide eclock**, and **Quit**. Closing the
+window hides it when a tray is available; Quit saves preferences and exits.
 
 On Linux, tray operation uses X11 or XWayland and requires a desktop
 StatusNotifier tray host. Without both, eclock uses an ordinary taskbar entry
@@ -76,8 +79,11 @@ amber from `:55`, then red from `:58`.
 
 ## Settings
 
-eclock remembers seconds visibility, zoom, alert state, and shortcut prompt
-visibility in an `app.ron` file:
+eclock remembers window size and position, seconds visibility, clock-text zoom,
+alert state, and shortcut prompt visibility in an `app.ron` file. Zoom changes
+the clock text without resizing the window; display scaling follows the OS.
+Saved window geometry from the previous framework is restored automatically.
+Settings are stored at:
 
 - **Linux:** `$XDG_DATA_HOME/eclock/app.ron` (usually `~/.local/share/eclock/app.ron`)
 - **macOS:** `~/Library/Application Support/eclock/app.ron`

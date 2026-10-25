@@ -14,8 +14,10 @@ inspection = ["eframe/inspection"]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 chrono-tz = "0.10.4"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "persistence", "wayland", "x11"] }
+egui-winit = { version = "0.37.0", default-features = false }
 iana-time-zone = "0.1.65"
 resvg = { version = "0.49.0", default-features = false }
+ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
 tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
 winit = { version = "0.30", default-features = false }
