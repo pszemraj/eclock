@@ -56,13 +56,38 @@ pub(crate) fn normal_position(cc: &eframe::CreationContext<'_>) -> Option<Pos2> 
 }
 
 impl LegacyWindow {
+    /// Returns saved placement only when its origin is on a connected monitor.
+    fn position_on_monitors(&self, mut monitors: impl Iterator<Item = egui::Rect>) -> Option<Pos2> {
+        let position = self.outer_position_pixels.or(self.inner_position_pixels)?;
+        monitors
+            .any(|monitor| {
+                monitor.min.x <= position.x
+                    && position.x < monitor.max.x
+                    && monitor.min.y <= position.y
+                    && position.y < monitor.max.y
+            })
+            .then_some(position)
+    }
+
     /// Requests legacy placement and restores maximized/fullscreen state.
     /// Seeds normal geometry independently of asynchronous native placement.
     pub(crate) fn restore(self, window: Arc<Window>, ctx: &egui::Context) -> WindowState {
-        let initial_position = self
-            .outer_position_pixels
-            .or(self.inner_position_pixels)
-            .map(|position| winit::dpi::PhysicalPosition::new(position.x, position.y));
+        // eframe cannot validate legacy coordinates; Windows must keep its default
+        // placement when the saved monitor is gone, including normal restore state.
+        let position = if cfg!(target_os = "windows") {
+            self.position_on_monitors(window.available_monitors().map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                egui::Rect::from_min_size(
+                    Pos2::new(position.x as f32, position.y as f32),
+                    Vec2::new(size.width as f32, size.height as f32),
+                )
+            }))
+        } else {
+            self.outer_position_pixels.or(self.inner_position_pixels)
+        };
+        let initial_position =
+            position.map(|position| winit::dpi::PhysicalPosition::new(position.x, position.y));
         if let Some(position) = initial_position {
             window.set_outer_position(position);
         }
@@ -74,7 +99,7 @@ impl LegacyWindow {
         }
         // WindowGeometry's fields are private; deserialize the native geometry shape.
         let geometry = Geometry {
-            outer_position_pixels: self.outer_position_pixels.or(self.inner_position_pixels),
+            outer_position_pixels: position,
             scale_factor: window.scale_factor() as f32,
             inner_size_points: self.inner_size_points.unwrap_or_else(|| {
                 let size = window.inner_size().to_logical::<f32>(window.scale_factor());
@@ -169,6 +194,49 @@ mod tests {
             Some(egui::pos2(2270.0, 1057.0))
         );
         assert!(window.fullscreen && window.maximized);
+
+        let portrait = egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 2560.0));
+        let landscape =
+            egui::Rect::from_min_size(Pos2::new(1440.0, 619.0), Vec2::new(2560.0, 1440.0));
+        assert_eq!(
+            window.position_on_monitors([portrait, landscape].into_iter()),
+            window.outer_position_pixels
+        );
+        // Removing the saved monitor leaves the native default placement in control.
+        assert_eq!(window.position_on_monitors([portrait].into_iter()), None);
+        for position in [Pos2::new(1440.0, 0.0), Pos2::new(0.0, 2560.0)] {
+            let on_removed_monitor = LegacyWindow {
+                outer_position_pixels: Some(position),
+                ..window
+            };
+            assert_eq!(
+                on_removed_monitor.position_on_monitors([portrait].into_iter()),
+                None
+            );
+        }
+
+        let inner_only = LegacyWindow {
+            outer_position_pixels: None,
+            ..window
+        };
+        assert_eq!(
+            inner_only.position_on_monitors([portrait, landscape].into_iter()),
+            window.inner_position_pixels
+        );
+        assert_eq!(
+            inner_only.position_on_monitors([portrait].into_iter()),
+            None
+        );
+
+        let left_monitor = portrait.translate(Vec2::new(-1440.0, 0.0));
+        let on_left_monitor = LegacyWindow {
+            outer_position_pixels: Some(Pos2::new(-1000.0, 100.0)),
+            ..window
+        };
+        assert_eq!(
+            on_left_monitor.position_on_monitors([left_monitor, portrait].into_iter()),
+            on_left_monitor.outer_position_pixels
+        );
     }
 
     #[test]
