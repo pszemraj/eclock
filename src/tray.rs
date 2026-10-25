@@ -44,11 +44,8 @@ impl Tray {
             .with_id("eclock")
             .with_tooltip("eclock")
             .with_menu(Box::new(menu))
-            .with_menu_on_left_click(false);
-        #[cfg(target_os = "macos")]
-        let builder = builder.with_icon_templated(icon);
-        #[cfg(not(target_os = "macos"))]
-        let builder = builder.with_icon(icon);
+            .with_menu_on_left_click(false)
+            .with_icon(icon);
         let icon = builder.build().map_err(|error| error.to_string())?;
 
         let (sender, actions) = mpsc::channel();

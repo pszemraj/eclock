@@ -1,4 +1,4 @@
-//! Bundled window and transparent tray SVGs rasterized at their authored sizes.
+//! Bundled digital window and tray SVGs rasterized at their authored sizes.
 
 use eframe::egui;
 use resvg::{tiny_skia, usvg};
@@ -14,7 +14,7 @@ pub(crate) fn icon() -> Option<egui::IconData> {
     rasterize(include_str!("../assets/icon.svg"), ICON_SIZE)
 }
 
-/// Renders the transparent clock glyph used by native tray and menu-bar icons.
+/// Renders the compact digital display used by native tray and menu-bar icons.
 ///
 /// # Returns
 /// A 32-by-32 RGBA icon, or `None` if SVG parsing or pixel allocation fails.
