@@ -7,6 +7,13 @@ use eframe::{App, Storage};
 
 use super::*;
 
+const VIEWPORT_SIZES: [[f32; 2]; 4] = [
+    [320.0, 200.0],
+    [480.0, 320.0],
+    [900.0, 520.0],
+    [1440.0, 760.0],
+];
+
 #[derive(Default)]
 struct MemoryStorage(BTreeMap<String, String>);
 
@@ -31,7 +38,6 @@ fn clock() -> ClockApp {
     ClockApp {
         settings: Settings::default(),
         tz: chrono_tz::America::New_York,
-        fullscreen: false,
         tray: None,
         quitting: false,
         taskbar_hidden: None,
@@ -61,8 +67,8 @@ fn run_headless(
 /// Checks that every text rectangle fits and that adjacent rows remain separate.
 fn check_layout(layout: &ClockLayout, viewport: Rect) {
     let mut rows = vec![layout.date_rect, layout.time_rect, layout.zone_rect];
-    if let Some(hint) = layout.hint_rect {
-        rows.push(hint);
+    if let Some((_, rect)) = &layout.hint {
+        rows.push(*rect);
     }
     for row in &rows {
         assert!(viewport.contains_rect(*row), "{row:?} outside {viewport:?}");
@@ -78,12 +84,7 @@ fn check_layout(layout: &ClockLayout, viewport: Rect) {
 #[test]
 fn full_clock_fits_small_tiles_and_large_windows_at_all_zoom_limits() {
     let ctx = egui::Context::default();
-    for [width, height] in [
-        [320.0, 200.0],
-        [480.0, 320.0],
-        [900.0, 520.0],
-        [1440.0, 760.0],
-    ] {
+    for [width, height] in VIEWPORT_SIZES {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
         for scale in [MIN_SCALE, DEFAULT_SCALE, MAX_SCALE] {
             for show_seconds in [false, true] {
@@ -194,11 +195,16 @@ fn close_without_a_tray_uses_normal_exit() {
 }
 
 #[test]
-fn fullscreen_keys_update_the_native_window_outside_the_input_lock() {
-    let ctx = egui::Context::default();
-    let mut app = clock();
-    for (key, expected) in [(egui::Key::F, true), (egui::Key::Escape, false)] {
-        let input = egui::RawInput {
+fn fullscreen_keys_follow_native_state_and_release_the_input_lock() {
+    for (fullscreen, key, expected) in [
+        (false, egui::Key::F, Some(true)),
+        (true, egui::Key::F, Some(false)),
+        (true, egui::Key::Escape, Some(false)),
+        (false, egui::Key::Escape, None),
+    ] {
+        let ctx = egui::Context::default();
+        let mut app = clock();
+        let mut input = egui::RawInput {
             events: vec![egui::Event::Key {
                 key,
                 physical_key: None,
@@ -208,11 +214,59 @@ fn fullscreen_keys_update_the_native_window_outside_the_input_lock() {
             }],
             ..Default::default()
         };
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .fullscreen = Some(fullscreen);
         let output = run_headless(&ctx, input, |_| app.handle_input(&ctx));
-        assert_eq!(app.fullscreen, expected);
-        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.iter().any(|command| {
-            matches!(command, egui::ViewportCommand::Fullscreen(value) if *value == expected)
-        }));
+        let fullscreen = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::ViewportCommand::Fullscreen(value) => Some(*value),
+                _ => None,
+            });
+        assert_eq!(fullscreen, expected);
+    }
+}
+
+#[test]
+fn native_fullscreen_disables_background_dragging_and_edge_resizing() {
+    for fullscreen in [false, true] {
+        for position in [Pos2::new(100.0, 100.0), Pos2::new(1.0, 1.0)] {
+            let ctx = egui::Context::default();
+            let mut app = clock();
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, MIN_WINDOW_SIZE)),
+                events: vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+                ..Default::default()
+            };
+            let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+            viewport.fullscreen = Some(fullscreen);
+            viewport.outer_rect = input.screen_rect;
+            let output = run_headless(&ctx, input, |ui| app.handle_pointer(ui));
+            let manipulation_started = output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|command| {
+                    matches!(
+                        command,
+                        egui::ViewportCommand::StartDrag | egui::ViewportCommand::BeginResize(_)
+                    )
+                });
+            #[cfg(target_os = "macos")]
+            let manipulation_started = manipulation_started || app.resizing.is_some();
+            assert_eq!(manipulation_started, !fullscreen);
+        }
     }
 }
 
@@ -256,12 +310,7 @@ fn macos_resize_anchors_opposite_edges_at_the_minimum_size() {
 fn smoke_clock() {
     let ctx = egui::Context::default();
     let mut app = clock();
-    for [width, height] in [
-        [320.0, 200.0],
-        [480.0, 320.0],
-        [900.0, 520.0],
-        [1440.0, 760.0],
-    ] {
+    for [width, height] in VIEWPORT_SIZES {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
         let input = egui::RawInput {
             screen_rect: Some(rect),
@@ -285,7 +334,7 @@ fn smoke_clock() {
                 layout.time_rect,
                 layout.date_rect,
                 layout.zone_rect,
-                layout.hint_rect
+                layout.hint.as_ref().map(|(_, rect)| rect)
             );
         });
         let _ = run_headless(&ctx, Default::default(), |_| {});

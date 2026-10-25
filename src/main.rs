@@ -23,7 +23,7 @@ fn main() -> eframe::Result<()> {
         .with_title("eclock")
         .with_app_id("eclock")
         .with_inner_size([900.0, 520.0])
-        .with_min_inner_size([320.0, 200.0])
+        .with_min_inner_size(app::MIN_WINDOW_SIZE)
         .with_decorations(false)
         .with_resizable(true);
 

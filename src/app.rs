@@ -22,6 +22,9 @@ const MAX_SCALE: f32 = 3.0;
 const SCALE_STEP: f32 = 0.1;
 const HINT: &str = "S\u{a0}seconds  ·  +/-\u{a0}zoom  ·  0\u{a0}reset  ·  A\u{a0}alert  ·  F\u{a0}fullscreen  ·  H\u{a0}hints";
 
+/// Smallest viewport supported by the clock layout and native resize edges.
+pub(crate) const MIN_WINDOW_SIZE: Vec2 = Vec2::new(320.0, 200.0);
+
 /// Preferences persisted in eframe's app.ron file.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -58,7 +61,6 @@ impl Settings {
 pub struct ClockApp {
     settings: Settings,
     tz: Tz,
-    fullscreen: bool,
     tray: Option<Tray>,
     quitting: bool,
     taskbar_hidden: Option<bool>,
@@ -91,7 +93,6 @@ impl ClockApp {
         let mut app = Self {
             settings: Settings::load(cc.storage),
             tz: system_timezone(),
-            fullscreen: false,
             tray,
             quitting: false,
             taskbar_hidden: None,
@@ -159,8 +160,7 @@ impl ClockApp {
 
     /// Handles keyboard toggles, fullscreen controls, and zoom.
     fn handle_input(&mut self, ctx: &egui::Context) {
-        let was_fullscreen = self.fullscreen;
-        ctx.input(|input| {
+        let fullscreen = ctx.input(|input| {
             use egui::Key;
             if input.key_pressed(Key::S) {
                 self.settings.show_seconds = !self.settings.show_seconds;
@@ -185,29 +185,33 @@ impl ClockApp {
                     * (1.0 + input.smooth_scroll_delta.y * 0.0015))
                     .clamp(MIN_SCALE, MAX_SCALE);
             }
+            let fullscreen = input.viewport().fullscreen.unwrap_or(false);
             if input.key_pressed(Key::F) {
-                self.fullscreen = !self.fullscreen;
-            } else if input.key_pressed(Key::Escape) && self.fullscreen {
-                self.fullscreen = false;
+                Some(!fullscreen)
+            } else if input.key_pressed(Key::Escape) && fullscreen {
+                Some(false)
+            } else {
+                None
             }
         });
-        if self.fullscreen != was_fullscreen {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        if let Some(fullscreen) = fullscreen {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
         }
     }
 
     /// Handles background dragging and resizing through invisible window edges.
     fn handle_pointer(&mut self, ui: &egui::Ui) {
-        if self.fullscreen {
-            return;
-        }
         let ctx = ui.ctx();
-        let (position, pressed) = ctx.input(|input| {
+        let (position, pressed, fullscreen) = ctx.input(|input| {
             (
                 input.pointer.interact_pos(),
                 input.pointer.primary_pressed(),
+                input.viewport().fullscreen.unwrap_or(false),
             )
         });
+        if fullscreen {
+            return;
+        }
         let Some(position) = position else {
             return;
         };
@@ -271,7 +275,6 @@ impl ClockApp {
     /// Paints a measured clock face and exposes its readouts to accessibility/inspection.
     fn draw(&self, ui: &egui::Ui, now: DateTime<Tz>) {
         let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, BG);
         let layout = ClockLayout::new(ui.painter(), rect, now, &self.settings);
         layout.paint(ui, now);
         if let Some(rgb) = self.alert_rgb(now.minute()) {
@@ -366,8 +369,7 @@ struct ClockLayout {
     date_rect: Rect,
     zone: Arc<Galley>,
     zone_rect: Rect,
-    hint: Option<Arc<Galley>>,
-    hint_rect: Option<Rect>,
+    hint: Option<(Arc<Galley>, Rect)>,
 }
 
 impl ClockLayout {
@@ -394,10 +396,8 @@ impl ClockLayout {
             0.8,
             width,
         );
-        let hint = settings
-            .show_hint
-            .then(|| caption(painter, HINT, 12.0, FG.gamma_multiply(0.4), 0.0, width));
-        let hint_rect = hint.as_ref().map(|text| {
+        let hint = settings.show_hint.then(|| {
+            let text = caption(painter, HINT, 12.0, FG.gamma_multiply(0.4), 0.0, width);
             let rect = Rect::from_min_size(
                 Pos2::new(
                     body.center().x - text.size().x / 2.0,
@@ -406,7 +406,7 @@ impl ClockLayout {
                 text.size(),
             );
             body.max.y = rect.top() - gap;
-            rect
+            (text, rect)
         });
         let available = Vec2::new(
             width,
@@ -438,7 +438,6 @@ impl ClockLayout {
             zone,
             zone_rect,
             hint,
-            hint_rect,
         }
     }
 
@@ -489,9 +488,9 @@ impl ClockLayout {
             self.zone_rect,
             format!("Time zone: {}", self.zone.text()),
         );
-        if let (Some(hint), Some(rect)) = (&self.hint, self.hint_rect) {
+        if let Some((hint, rect)) = &self.hint {
             paint_text(painter, rect.min, hint);
-            semantic_label(ui, "hints", rect, HINT.to_owned());
+            semantic_label(ui, "hints", *rect, HINT.to_owned());
         }
     }
 }
@@ -562,16 +561,16 @@ fn resize_direction(rect: Rect, position: Pos2) -> Option<egui::ResizeDirection>
 fn resized_rect(mut rect: Rect, delta: Vec2, direction: egui::ResizeDirection) -> Rect {
     use egui::ResizeDirection::*;
     if matches!(direction, West | NorthWest | SouthWest) {
-        rect.min.x = (rect.min.x + delta.x).min(rect.max.x - 320.0);
+        rect.min.x = (rect.min.x + delta.x).min(rect.max.x - MIN_WINDOW_SIZE.x);
     }
     if matches!(direction, East | NorthEast | SouthEast) {
-        rect.max.x = (rect.max.x + delta.x).max(rect.min.x + 320.0);
+        rect.max.x = (rect.max.x + delta.x).max(rect.min.x + MIN_WINDOW_SIZE.x);
     }
     if matches!(direction, North | NorthWest | NorthEast) {
-        rect.min.y = (rect.min.y + delta.y).min(rect.max.y - 200.0);
+        rect.min.y = (rect.min.y + delta.y).min(rect.max.y - MIN_WINDOW_SIZE.y);
     }
     if matches!(direction, South | SouthWest | SouthEast) {
-        rect.max.y = (rect.max.y + delta.y).max(rect.min.y + 200.0);
+        rect.max.y = (rect.max.y + delta.y).max(rect.min.y + MIN_WINDOW_SIZE.y);
     }
     rect
 }
