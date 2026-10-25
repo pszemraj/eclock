@@ -151,10 +151,10 @@ impl ClockApp {
             return;
         }
         if let Some(window) = window {
-            if let Err(error) = crate::platform::set_taskbar_hidden(window, hidden) {
-                eprintln!("Could not update taskbar presence: {error}");
+            match crate::platform::set_taskbar_hidden(window, hidden) {
+                Ok(()) => self.taskbar_hidden = Some(hidden),
+                Err(error) => eprintln!("Could not update taskbar presence: {error}"),
             }
-            self.taskbar_hidden = Some(hidden);
         }
     }
 
