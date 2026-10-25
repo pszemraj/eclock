@@ -27,8 +27,9 @@ From a checkout of this repository:
 cargo run --release
 ```
 
-The clock window opens with your local time, date, and time zone. Press `Ctrl+/`
-for the keyboard shortcuts menu, or `S` to show seconds.
+On first launch, a 1280×800 window shows your local time, date, and time zone.
+Later launches restore your saved window size and position. Press `Ctrl+/` for
+the keyboard shortcuts menu, or `S` to show seconds.
 
 To build once and test the local binary directly:
 
@@ -47,11 +48,16 @@ eclock
 ## Window and tray
 
 The clock opens visibly. On Linux it has both a tray icon and an ordinary
-dock/taskbar entry so desktop tiling tools can manage it. On macOS it uses a
-menu-bar icon; on Windows it uses a tray icon without a taskbar entry.
+dock/taskbar entry so desktop tiling tools can manage it. Linux dock hiding is
+managed by your desktop. On macOS it uses a menu-bar icon without a Dock entry;
+on Windows it hides the taskbar entry when a tray is available.
+
+Tiling and resizing have been tested on Ubuntu GNOME with Tiling Assistant and
+Rectangle. Native macOS and Windows tiling and resizing remain unverified.
 
 The tray menu offers **Show eclock**, **Hide eclock**, and **Quit**. Closing the
-window hides it when a tray is available; Quit saves preferences and exits.
+window hides it when a usable tray is available; otherwise it saves and exits.
+Quit always saves preferences and exits.
 
 On Linux, tray operation uses X11 or XWayland and requires a desktop
 StatusNotifier tray host. Without both, eclock uses an ordinary taskbar entry
@@ -79,11 +85,11 @@ amber from `:55`, then red from `:58`.
 
 ## Settings
 
-eclock remembers window size and position, seconds visibility, clock-text zoom,
-alert state, and shortcut prompt visibility in an `app.ron` file. Zoom changes
-the clock text without resizing the window; display scaling follows the OS.
-Saved window geometry from the previous framework is restored automatically.
-Settings are stored at:
+eclock remembers window size and position, fullscreen/maximized state, seconds
+visibility, clock-text zoom, alert state, and shortcut prompt visibility in an
+`app.ron` file. Zoom changes the clock text without resizing the window; display
+scaling follows the OS. Window geometry saved by earlier eclock builds is
+restored automatically. Settings are stored at:
 
 - **Linux:** `$XDG_DATA_HOME/eclock/app.ron` (usually `~/.local/share/eclock/app.ron`)
 - **macOS:** `~/Library/Application Support/eclock/app.ron`
