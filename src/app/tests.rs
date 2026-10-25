@@ -179,6 +179,38 @@ fn close_hides_but_explicit_quit_is_never_cancelled() {
 }
 
 #[test]
+fn hiding_fullscreen_preserves_the_native_restore_request() {
+    let ctx = egui::Context::default();
+    let mut app = clock();
+    let mut input = egui::RawInput::default();
+    input
+        .viewports
+        .get_mut(&egui::ViewportId::ROOT)
+        .unwrap()
+        .fullscreen = Some(true);
+    let output = run_headless(&ctx, input, |_| app.window_action(&ctx, Action::Hide));
+    let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+    #[cfg(target_os = "linux")]
+    assert!(
+        matches!(
+            commands.as_slice(),
+            [
+                egui::ViewportCommand::Fullscreen(false),
+                egui::ViewportCommand::Visible(false),
+                egui::ViewportCommand::Fullscreen(true),
+                ..
+            ]
+        ),
+        "{commands:?}"
+    );
+    #[cfg(not(target_os = "linux"))]
+    assert!(matches!(
+        commands.as_slice(),
+        [egui::ViewportCommand::Visible(false), ..]
+    ));
+}
+
+#[test]
 fn close_without_a_tray_uses_normal_exit() {
     let ctx = egui::Context::default();
     let mut app = clock();

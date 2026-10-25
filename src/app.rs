@@ -127,6 +127,14 @@ impl ClockApp {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
             Action::Hide => {
+                #[cfg(target_os = "linux")]
+                if ctx.input(|input| input.viewport().fullscreen.unwrap_or(false)) {
+                    // Release fullscreen before X11 unmapping; winit restores it after mapping.
+                    ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+                    ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+                    ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
+                    return;
+                }
                 ctx.send_viewport_cmd(ViewportCommand::Visible(false));
             }
             Action::Quit => {
