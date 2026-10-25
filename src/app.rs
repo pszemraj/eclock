@@ -72,6 +72,8 @@ pub struct ClockApp {
     #[cfg(target_os = "windows")]
     taskbar_hidden: Option<bool>,
     window_state: Option<crate::persistence::WindowState>,
+    // X11 can lose placement when unmapped; other platforms restore it natively.
+    #[cfg(target_os = "linux")]
     windowed_position: Option<Pos2>,
     shortcuts_open: bool,
     #[cfg(target_os = "macos")]
@@ -118,6 +120,7 @@ impl ClockApp {
                     |saved| saved.restore(window.clone(), &cc.egui_ctx),
                 )
             }),
+            #[cfg(target_os = "linux")]
             windowed_position: crate::persistence::normal_position(cc),
             shortcuts_open: false,
             #[cfg(target_os = "macos")]
@@ -149,6 +152,7 @@ impl ClockApp {
                 }
                 ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                #[cfg(target_os = "linux")]
                 if ctx.input(|input| {
                     !input.viewport().fullscreen.unwrap_or(false)
                         && !input.viewport().maximized.unwrap_or(false)
@@ -159,6 +163,7 @@ impl ClockApp {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
             Action::Hide => {
+                #[cfg(target_os = "linux")]
                 self.remember_position(ctx);
                 #[cfg(target_os = "linux")]
                 if ctx.input(|input| input.viewport().fullscreen.unwrap_or(false)) {
@@ -177,7 +182,8 @@ impl ClockApp {
         }
     }
 
-    /// Retains the windowed position across native unmapping and fullscreen changes.
+    /// Retains Linux windowed placement across unmapping and fullscreen changes.
+    #[cfg(target_os = "linux")]
     fn remember_position(&mut self, ctx: &egui::Context) {
         if self
             .window_state
@@ -224,6 +230,7 @@ impl ClockApp {
         if self.shortcuts_open {
             return;
         }
+        #[cfg(target_os = "linux")]
         self.remember_position(ctx);
         let fullscreen = ctx.input(|input| {
             use egui::Key;
@@ -261,6 +268,7 @@ impl ClockApp {
         });
         if let Some(fullscreen) = fullscreen {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
+            #[cfg(target_os = "linux")]
             if !fullscreen && let Some(position) = self.windowed_position {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
             }

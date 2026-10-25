@@ -46,6 +46,7 @@ fn clock() -> ClockApp {
         #[cfg(target_os = "windows")]
         taskbar_hidden: None,
         window_state: None,
+        #[cfg(target_os = "linux")]
         windowed_position: None,
         shortcuts_open: false,
         #[cfg(target_os = "macos")]
@@ -322,65 +323,101 @@ fn close_without_a_tray_uses_normal_exit() {
 }
 
 #[test]
-fn tray_restore_and_fullscreen_exit_retain_the_windowed_position() {
-    let ctx = egui::Context::default();
-    let mut app = clock();
-    let position = Pos2::new(1900.0, 880.0);
-    let rect = Rect::from_min_size(position, Vec2::new(980.0, 580.0));
-    let mut input = egui::RawInput::default();
-    input
-        .viewports
-        .get_mut(&egui::ViewportId::ROOT)
-        .unwrap()
-        .outer_rect = Some(rect);
-    let _ = run_headless(&ctx, input, |_| app.window_action(&ctx, Action::Hide));
-    assert_eq!(app.windowed_position, Some(position));
-
-    let output = run_headless(&ctx, Default::default(), |_| {
-        app.window_action(&ctx, Action::Show);
-    });
-    assert!(output.viewport_output[&egui::ViewportId::ROOT]
-        .commands
-        .iter()
-        .any(|command| matches!(command, egui::ViewportCommand::OuterPosition(p) if *p == position)));
-
-    let mut input = key_input(egui::Key::Escape, egui::Modifiers::NONE);
-    let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
-    viewport.fullscreen = Some(true);
-    viewport.outer_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(2560.0, 1440.0)));
-    let output = run_headless(&ctx, input, |_| app.handle_input(&ctx));
-    assert!(output.viewport_output[&egui::ViewportId::ROOT]
-        .commands
-        .iter()
-        .any(|command| matches!(command, egui::ViewportCommand::OuterPosition(p) if *p == position)));
-    assert_eq!(app.windowed_position, Some(position));
-}
-
-#[test]
-fn fullscreen_keys_follow_native_state_and_release_the_input_lock() {
-    for (fullscreen, key, expected) in [
-        (false, egui::Key::F, Some(true)),
-        (true, egui::Key::F, Some(false)),
-        (true, egui::Key::Escape, Some(false)),
-        (false, egui::Key::Escape, None),
-    ] {
+fn tray_restore_and_fullscreen_exit_follow_native_position_policy() {
+    // The off-screen case represents a saved position on a disconnected monitor.
+    for position in [Pos2::new(1900.0, 880.0), Pos2::new(10000.0, 880.0)] {
         let ctx = egui::Context::default();
         let mut app = clock();
-        let mut input = key_input(key, egui::Modifiers::NONE);
+        let rect = Rect::from_min_size(position, Vec2::new(980.0, 580.0));
+        let mut input = egui::RawInput::default();
         input
             .viewports
             .get_mut(&egui::ViewportId::ROOT)
             .unwrap()
-            .fullscreen = Some(fullscreen);
+            .outer_rect = Some(rect);
+        let _ = run_headless(&ctx, input, |_| app.window_action(&ctx, Action::Hide));
+        #[cfg(target_os = "linux")]
+        assert_eq!(app.windowed_position, Some(position));
+
+        let expected_position = cfg!(target_os = "linux").then_some(position);
+
+        let output = run_headless(&ctx, Default::default(), |_| {
+            app.window_action(&ctx, Action::Show);
+        });
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::ViewportCommand::OuterPosition(position) => Some(*position),
+                    _ => None,
+                }),
+            expected_position
+        );
+
+        let mut input = key_input(egui::Key::Escape, egui::Modifiers::NONE);
+        let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+        viewport.fullscreen = Some(true);
+        viewport.outer_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(2560.0, 1440.0)));
         let output = run_headless(&ctx, input, |_| app.handle_input(&ctx));
-        let fullscreen = output.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .iter()
-            .find_map(|command| match command {
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::ViewportCommand::OuterPosition(position) => Some(*position),
+                    _ => None,
+                }),
+            expected_position
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(app.windowed_position, Some(position));
+    }
+}
+
+#[test]
+fn fullscreen_keys_follow_native_state_and_release_the_input_lock() {
+    for maximized in [false, true] {
+        for (fullscreen, key, expected) in [
+            (false, egui::Key::F, Some(true)),
+            (true, egui::Key::F, Some(false)),
+            (true, egui::Key::Escape, Some(false)),
+            (false, egui::Key::Escape, None),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = clock();
+            let mut normal_input = egui::RawInput::default();
+            normal_input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .outer_rect = Some(Rect::from_min_size(
+                Pos2::new(1900.0, 880.0),
+                Vec2::new(980.0, 580.0),
+            ));
+            let _ = run_headless(&ctx, normal_input, |_| app.handle_input(&ctx));
+            let mut input = key_input(key, egui::Modifiers::NONE);
+            let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+            viewport.fullscreen = Some(fullscreen);
+            viewport.maximized = Some(maximized);
+            let output = run_headless(&ctx, input, |_| app.handle_input(&ctx));
+            let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+            let fullscreen = commands.iter().find_map(|command| match command {
                 egui::ViewportCommand::Fullscreen(value) => Some(*value),
                 _ => None,
             });
-        assert_eq!(fullscreen, expected);
+            assert_eq!(fullscreen, expected);
+            if !cfg!(target_os = "linux") {
+                assert!(
+                    !commands.iter().any(|command| matches!(
+                        command,
+                        egui::ViewportCommand::OuterPosition(_)
+                            | egui::ViewportCommand::Maximized(_)
+                    )),
+                    "native fullscreen restoration was overridden: {commands:?}"
+                );
+            }
+        }
     }
 }
 

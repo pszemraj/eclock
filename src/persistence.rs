@@ -33,7 +33,9 @@ pub(crate) fn load_legacy_window() -> Option<LegacyWindow> {
     ron::from_str(storage.get("window")?).ok()
 }
 
-/// Reads the saved normal position in UI points, including fullscreen startups.
+/// Seeds Linux's position cache from saved geometry, including fullscreen startups.
+/// Other platforms retain the framework's monitor-validated native placement.
+#[cfg(target_os = "linux")]
 pub(crate) fn normal_position(cc: &eframe::CreationContext<'_>) -> Option<Pos2> {
     #[derive(serde::Deserialize)]
     struct SavedWindow {
@@ -116,6 +118,7 @@ impl WindowState {
     }
 
     /// Reports whether legacy placement is awaiting a visible, windowed frame.
+    #[cfg(target_os = "linux")]
     pub(crate) fn is_position_pending(&self) -> bool {
         self.initial_position.is_some()
     }
