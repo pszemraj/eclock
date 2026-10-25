@@ -47,11 +47,13 @@ eclock
 ```
 
 On Linux, register the application launcher and dock icon after installing the
-command. These commands use `desktop-file-install` from `desktop-file-utils`:
+command. `desktop-file-install` comes from `desktop-file-utils`. Refreshing the
+icon theme makes the new icon visible to desktops that are already running:
 
 ```sh
 desktop_data="${XDG_DATA_HOME:-$HOME/.local/share}"
 install -Dm644 assets/icon.svg "$desktop_data/icons/hicolor/scalable/apps/eclock.svg"
+touch "$desktop_data/icons/hicolor"
 desktop-file-install --dir="$desktop_data/applications" \
   --set-key=Exec --set-value="\"$(command -v eclock)\"" assets/eclock.desktop
 ```
@@ -126,7 +128,8 @@ Inspection is disabled unless enabled at runtime.
 ## Notes
 
 - Icon sources are `assets/icon.svg` for the window and `assets/tray.svg` for
-  the tray; rebuild after editing them.
+  the tray; rebuild after editing them. On Linux, rerun the registration commands
+  above to update the dock icon too.
 - Basic colors, alert timing, zoom limits, and initial window size are set in
   `src/app.rs` and `src/main.rs`.
 
