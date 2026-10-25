@@ -8,6 +8,9 @@ use winit::window::Window;
 
 /// Creates the native UI context without restoring framework-wide zoom.
 /// Clock text scale remains in the application's own persisted preferences.
+///
+/// # Returns
+/// A fresh context at global zoom `1.0` with framework zoom shortcuts disabled.
 pub(crate) fn egui_context() -> egui::Context {
     let ctx = egui::Context::default();
     ctx.options_mut(|options| options.zoom_with_keyboard = false);
@@ -26,7 +29,10 @@ pub(crate) struct LegacyWindow {
 }
 
 /// Reads only legacy native geometry; eframe loads the current format directly.
-/// Missing or unreadable state uses the framework's ordinary defaults.
+///
+/// # Returns
+/// Saved legacy geometry, or `None` when storage is unavailable, unreadable,
+/// malformed, or contains a current-format window record.
 pub(crate) fn load_legacy_window() -> Option<LegacyWindow> {
     let path = eframe::storage_dir("eclock")?.join("app.ron");
     let storage: HashMap<String, String> = ron::de::from_reader(File::open(path).ok()?).ok()?;
@@ -35,6 +41,16 @@ pub(crate) fn load_legacy_window() -> Option<LegacyWindow> {
 
 /// Seeds Linux's position cache from saved geometry, including fullscreen startups.
 /// Other platforms retain the framework's monitor-validated native placement.
+///
+/// # Arguments
+/// - `cc` - Saved storage and the native window providing the display scale factor.
+///
+/// # Returns
+/// The saved normal position in UI points, or `None` if storage, placement,
+/// or the native window is unavailable.
+///
+/// # Panics
+/// On X11, panics if winit's native window-state mutex is poisoned.
 #[cfg(target_os = "linux")]
 pub(crate) fn normal_position(cc: &eframe::CreationContext<'_>) -> Option<Pos2> {
     #[derive(serde::Deserialize)]
@@ -71,6 +87,17 @@ impl LegacyWindow {
 
     /// Requests legacy placement and restores maximized/fullscreen state.
     /// Seeds normal geometry independently of asynchronous native placement.
+    ///
+    /// # Arguments
+    /// - `window` - Native window to position and retain in the geometry tracker.
+    /// - `ctx` - Context receiving the saved maximized/fullscreen requests.
+    ///
+    /// # Returns
+    /// A tracker seeded with legacy normal geometry and any pending placement.
+    ///
+    /// # Panics
+    /// Panics if native geometry cannot be serialized or the resulting record
+    /// cannot be decoded as egui-winit's `WindowGeometry`.
     pub(crate) fn restore(self, window: Arc<Window>, ctx: &egui::Context) -> WindowState {
         // eframe cannot validate legacy coordinates; Windows must keep its default
         // placement when the saved monitor is gone, including normal restore state.
@@ -131,6 +158,14 @@ pub(crate) struct WindowState {
 
 impl WindowState {
     /// Restores the native normal geometry without inheriting framework UI zoom.
+    ///
+    /// # Arguments
+    /// - `window` - Native window whose geometry will be observed and saved.
+    /// - `storage` - Optional storage containing the current-format window record.
+    ///
+    /// # Returns
+    /// A tracker using saved normal geometry, or the window's current geometry
+    /// when no saved record can be decoded.
     pub(crate) fn new(window: Arc<Window>, storage: Option<&dyn eframe::Storage>) -> Self {
         Self {
             normal_geometry: storage
@@ -143,6 +178,9 @@ impl WindowState {
     }
 
     /// Reports whether legacy placement is awaiting a visible, windowed frame.
+    ///
+    /// # Returns
+    /// `true` while a saved legacy position is still waiting to be applied.
     #[cfg(target_os = "linux")]
     pub(crate) fn is_position_pending(&self) -> bool {
         self.initial_position.is_some()
