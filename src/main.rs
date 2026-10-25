@@ -10,6 +10,8 @@
 //! event loop to restore the window without continuous polling.
 
 mod app;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod icon;
 mod persistence;
 mod platform;
@@ -19,6 +21,10 @@ use app::ClockApp;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    #[cfg(target_os = "linux")]
+    if let Err(error) = desktop::register() {
+        eprintln!("Could not register eclock's desktop launcher: {error}");
+    }
     let tray_supported = platform::tray_supported();
     let legacy_window = persistence::load_legacy_window();
     let mut viewport = egui::ViewportBuilder::default()

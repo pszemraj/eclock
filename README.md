@@ -12,11 +12,11 @@ redraws once per second with seconds shown, or once per minute otherwise.
 You need Rust 1.95 or newer and a working OpenGL driver. Install a Rust
 toolchain with [rustup](https://rustup.rs/).
 
-On Debian/Ubuntu, install the build and desktop-integration prerequisites first:
+On Debian/Ubuntu, install the build prerequisites first:
 
 ```sh
 sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-  libxkbcommon-dev desktop-file-utils
+  libxkbcommon-dev
 ```
 
 Use equivalent packages on other Linux distributions. macOS and Windows do
@@ -46,20 +46,10 @@ cargo install --path . --locked
 eclock
 ```
 
-On Linux, register the application launcher and dock icon after installing the
-command. `desktop-file-install` comes from `desktop-file-utils`. Refreshing the
-icon theme makes the new icon visible to desktops that are already running:
-
-```sh
-desktop_data="${XDG_DATA_HOME:-$HOME/.local/share}"
-install -Dm644 assets/icon.svg "$desktop_data/icons/hicolor/scalable/apps/eclock.svg"
-touch "$desktop_data/icons/hicolor"
-desktop-file-install --dir="$desktop_data/applications" \
-  --set-key=Exec --set-value="\"$(command -v eclock)\"" assets/eclock.desktop
-```
-
-Reopen eclock after registering it. `cargo install` installs the executable;
-the launcher gives GNOME the application identity and icon used in the dock.
+On Linux, eclock registers its application launcher and dock icon automatically
+when it starts. Both assets are embedded in the executable; no extra installation
+commands or source checkout are needed after `cargo install`. The launcher points
+to the executable you ran and is updated if you move or reinstall it.
 
 ## Window and tray
 
@@ -113,6 +103,11 @@ restored automatically. Settings are stored at:
 
 Delete that file to reset the app to defaults.
 
+On Linux, eclock also keeps its bundled `icon.svg` beside `app.ron` and manages
+`$XDG_DATA_HOME/applications/eclock.desktop` (usually
+`~/.local/share/applications/eclock.desktop`). The launcher uses the icon's
+absolute path so the dock does not depend on an icon-theme cache refresh.
+
 ## Inspect the UI
 
 Build with the optional inspection feature and enable it at launch:
@@ -127,9 +122,9 @@ Inspection is disabled unless enabled at runtime.
 
 ## Notes
 
-- Icon sources are `assets/icon.svg` for the window and `assets/tray.svg` for
-  the tray; rebuild after editing them. On Linux, rerun the registration commands
-  above to update the dock icon too.
+- Icon sources are `assets/icon.svg` for the window/dock and `assets/tray.svg` for
+  the tray; rebuild after editing them. Launching the rebuilt executable updates
+  the Linux launcher and dock icon.
 - Basic colors, alert timing, zoom limits, and initial window size are set in
   `src/app.rs` and `src/main.rs`.
 
