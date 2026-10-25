@@ -1,8 +1,4 @@
-//! Window icon: rasterizes the bundled SVG into pixels the windowing system can display.
-//!
-//! The SVG at `assets/icon.svg` is the single source of truth. It is compiled
-//! into the binary with [`include_str!`] and rendered at startup, so editing the
-//! SVG also updates the window / taskbar / dock icon with no extra build step.
+//! Bundled window and transparent tray SVGs rasterized at their authored sizes.
 
 use eframe::egui;
 use resvg::{tiny_skia, usvg};
@@ -10,26 +6,22 @@ use resvg::{tiny_skia, usvg};
 /// Side length, in pixels, of the square bitmap the icon is rasterized to.
 const ICON_SIZE: u32 = 256;
 
-/// Builds the application icon as raw RGBA pixels for the windowing system.
-///
-/// The bundled `assets/icon.svg` is parsed and rendered to an `ICON_SIZE`-square
-/// bitmap. Rendering is best-effort: if the SVG fails to parse or the pixel
-/// buffer cannot be allocated, this returns `None` and the platform falls back
-/// to its default window icon rather than failing to launch.
-///
-/// # Returns
-///
-/// `Some(IconData)` holding un-premultiplied RGBA pixels (row-major, top to
-/// bottom) on success, or `None` if the icon could not be produced.
+/// Renders the window icon as straight-alpha RGBA, or returns None on failure.
 pub(crate) fn icon() -> Option<egui::IconData> {
-    let svg = include_str!("../assets/icon.svg");
+    rasterize(include_str!("../assets/icon.svg"), ICON_SIZE)
+}
 
+/// Renders the transparent clock glyph used by native tray and menu-bar icons.
+pub(crate) fn tray_icon() -> Option<egui::IconData> {
+    rasterize(include_str!("../assets/tray.svg"), 32)
+}
+
+/// Converts a bundled square SVG to straight-alpha RGBA pixels.
+fn rasterize(svg: &str, size: u32) -> Option<egui::IconData> {
     let options = usvg::Options::default();
     let tree = usvg::Tree::from_str(svg, &options).ok()?;
-    let mut pixmap = tiny_skia::Pixmap::new(ICON_SIZE, ICON_SIZE)?;
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
 
-    // The SVG is authored at ICON_SIZE square, so an identity transform maps its
-    // user units one-to-one onto the pixmap and fills it exactly.
     resvg::render(
         &tree,
         tiny_skia::Transform::identity(),
@@ -38,7 +30,7 @@ pub(crate) fn icon() -> Option<egui::IconData> {
 
     // tiny-skia stores colors with premultiplied alpha; egui expects straight
     // (un-premultiplied) RGBA, so demultiply each pixel as it is copied out.
-    let mut rgba = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
+    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
     for pixel in pixmap.pixels() {
         let color = pixel.demultiply();
         rgba.push(color.red());
@@ -49,7 +41,7 @@ pub(crate) fn icon() -> Option<egui::IconData> {
 
     Some(egui::IconData {
         rgba,
-        width: ICON_SIZE,
-        height: ICON_SIZE,
+        width: size,
+        height: size,
     })
 }

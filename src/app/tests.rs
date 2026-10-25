@@ -1,0 +1,307 @@
+//! Headless layout, window-lifecycle, persistence, and manual smoke scenarios.
+
+use std::collections::BTreeMap;
+
+use chrono::TimeZone;
+use eframe::{App, Storage};
+
+use super::*;
+
+#[derive(Default)]
+struct MemoryStorage(BTreeMap<String, String>);
+
+impl eframe::Storage for MemoryStorage {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+
+    fn flush(&mut self) {}
+}
+
+/// Constructs a clock without native resources for headless scenarios.
+fn clock() -> ClockApp {
+    ClockApp {
+        settings: Settings::default(),
+        tz: chrono_tz::America::New_York,
+        fullscreen: false,
+        tray: None,
+        quitting: false,
+        taskbar_hidden: None,
+        #[cfg(target_os = "macos")]
+        resizing: None,
+    }
+}
+
+/// Uses a long date and wide time digits to exercise caption wrapping and fitting.
+fn example_time() -> DateTime<Tz> {
+    chrono_tz::America::New_York
+        .with_ymd_and_hms(2026, 9, 30, 23, 58, 59)
+        .unwrap()
+}
+
+/// Runs a UI frame without a renderer and discards its texture uploads explicitly.
+fn run_headless(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
+/// Checks that every text rectangle fits and that adjacent rows remain separate.
+fn check_layout(layout: &ClockLayout, viewport: Rect) {
+    let mut rows = vec![layout.date_rect, layout.time_rect, layout.zone_rect];
+    if let Some(hint) = layout.hint_rect {
+        rows.push(hint);
+    }
+    for row in &rows {
+        assert!(viewport.contains_rect(*row), "{row:?} outside {viewport:?}");
+    }
+    for pair in rows.windows(2) {
+        assert!(
+            pair[0].bottom() <= pair[1].top(),
+            "overlapping rows: {pair:?}"
+        );
+    }
+}
+
+#[test]
+fn full_clock_fits_small_tiles_and_large_windows_at_all_zoom_limits() {
+    let ctx = egui::Context::default();
+    for [width, height] in [
+        [320.0, 200.0],
+        [480.0, 320.0],
+        [900.0, 520.0],
+        [1440.0, 760.0],
+    ] {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
+        for scale in [MIN_SCALE, DEFAULT_SCALE, MAX_SCALE] {
+            for show_seconds in [false, true] {
+                for show_hint in [false, true] {
+                    let settings = Settings {
+                        scale,
+                        show_seconds,
+                        show_hint,
+                        ..Settings::default()
+                    };
+                    let _ = run_headless(
+                        &ctx,
+                        egui::RawInput {
+                            screen_rect: Some(rect),
+                            ..Default::default()
+                        },
+                        |ui| {
+                            let layout =
+                                ClockLayout::new(ui.painter(), rect, example_time(), &settings);
+                            check_layout(&layout, rect);
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn existing_settings_restore_and_survive_save_reload() {
+    let mut storage = MemoryStorage::default();
+    storage.set_string(
+        eframe::APP_KEY,
+        "(show_seconds:true,scale:2.3,alert_enabled:true,show_hint:false)".into(),
+    );
+    let mut app = clock();
+    app.settings = Settings::load(Some(&storage));
+    assert_eq!(
+        app.settings,
+        Settings {
+            show_seconds: true,
+            scale: 2.3,
+            alert_enabled: true,
+            show_hint: false
+        }
+    );
+    app.save(&mut storage);
+    assert_eq!(Settings::load(Some(&storage)), app.settings);
+    assert_eq!(Settings::load(None), Settings::default());
+}
+
+#[test]
+fn close_hides_but_explicit_quit_is_never_cancelled() {
+    let ctx = egui::Context::default();
+    let mut app = clock();
+    let output = run_headless(&ctx, Default::default(), |_| app.close_window(&ctx, true));
+    let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::Visible(false)))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+    );
+
+    let output = run_headless(&ctx, Default::default(), |_| {
+        app.window_action(&ctx, Action::Show);
+        app.window_action(&ctx, Action::Hide);
+        app.window_action(&ctx, Action::Quit);
+        app.close_window(&ctx, true);
+    });
+    assert!(app.quitting);
+    let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::Visible(true)))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::Close))
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+    );
+}
+
+#[test]
+fn close_without_a_tray_uses_normal_exit() {
+    let ctx = egui::Context::default();
+    let mut app = clock();
+    let output = run_headless(&ctx, Default::default(), |_| app.close_window(&ctx, false));
+    assert!(
+        !output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|command| matches!(
+                command,
+                egui::ViewportCommand::CancelClose | egui::ViewportCommand::Visible(false)
+            ))
+    );
+}
+
+#[test]
+fn fullscreen_keys_update_the_native_window_outside_the_input_lock() {
+    let ctx = egui::Context::default();
+    let mut app = clock();
+    for (key, expected) in [(egui::Key::F, true), (egui::Key::Escape, false)] {
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let output = run_headless(&ctx, input, |_| app.handle_input(&ctx));
+        assert_eq!(app.fullscreen, expected);
+        assert!(output.viewport_output[&egui::ViewportId::ROOT].commands.iter().any(|command| {
+            matches!(command, egui::ViewportCommand::Fullscreen(value) if *value == expected)
+        }));
+    }
+}
+
+#[test]
+fn tick_deadlines_and_alert_thresholds_follow_the_display() {
+    let time = Utc.with_ymd_and_hms(2026, 10, 24, 23, 59, 59).unwrap()
+        + chrono::Duration::milliseconds(990);
+    assert_eq!(ms_to_next_tick(&time, true), 35);
+    assert_eq!(ms_to_next_tick(&time, false), 35);
+    let time = Utc.with_ymd_and_hms(2026, 10, 24, 23, 0, 12).unwrap();
+    assert_eq!(ms_to_next_tick(&time, false), 48_025);
+    let mut app = clock();
+    assert_eq!(app.alert_rgb(59), None);
+    app.settings.alert_enabled = true;
+    assert_eq!(app.alert_rgb(54), None);
+    assert_eq!(app.alert_rgb(55), Some(WARN_RGB));
+    assert_eq!(app.alert_rgb(58), Some(SOON_RGB));
+}
+
+#[test]
+fn macos_resize_anchors_opposite_edges_at_the_minimum_size() {
+    let original = Rect::from_min_size(Pos2::new(100.0, 200.0), Vec2::new(900.0, 520.0));
+    let smaller = resized_rect(
+        original,
+        Vec2::new(800.0, 500.0),
+        egui::ResizeDirection::NorthWest,
+    );
+    assert_eq!(smaller.max, original.max);
+    assert_eq!(smaller.size(), Vec2::new(320.0, 200.0));
+    let larger = resized_rect(
+        original,
+        Vec2::new(80.0, 50.0),
+        egui::ResizeDirection::SouthEast,
+    );
+    assert_eq!(larger.min, original.min);
+    assert_eq!(larger.size(), Vec2::new(980.0, 570.0));
+}
+
+#[test]
+#[ignore = "manual headless workflow; prints rendered bounds and restored preferences"]
+fn smoke_clock() {
+    let ctx = egui::Context::default();
+    let mut app = clock();
+    for [width, height] in [
+        [320.0, 200.0],
+        [480.0, 320.0],
+        [900.0, 520.0],
+        [1440.0, 760.0],
+    ] {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
+        let input = egui::RawInput {
+            screen_rect: Some(rect),
+            events: vec![egui::Event::Key {
+                key: egui::Key::S,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let _ = run_headless(&ctx, input, |ui| {
+            app.handle_input(&ctx);
+            app.draw(ui, example_time());
+            let layout = ClockLayout::new(ui.painter(), rect, example_time(), &app.settings);
+            check_layout(&layout, rect);
+            println!(
+                "{width}x{height}: seconds={}, time={:?}, date={:?}, zone={:?}, hint={:?}",
+                app.settings.show_seconds,
+                layout.time_rect,
+                layout.date_rect,
+                layout.zone_rect,
+                layout.hint_rect
+            );
+        });
+        let _ = run_headless(&ctx, Default::default(), |_| {});
+    }
+    let _ = run_headless(&ctx, Default::default(), |_| {
+        app.close_window(&ctx, true);
+        app.window_action(&ctx, Action::Show);
+        app.window_action(&ctx, Action::Hide);
+        app.window_action(&ctx, Action::Quit);
+        assert!(app.quitting);
+    });
+    let mut storage = MemoryStorage::default();
+    app.save(&mut storage);
+    assert_eq!(Settings::load(Some(&storage)), app.settings);
+    println!(
+        "Hide -> Show -> Hide -> Quit; saved/reloaded preferences: {:?}",
+        app.settings
+    );
+}

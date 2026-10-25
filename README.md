@@ -2,13 +2,14 @@
 
 A small desktop clock for keeping a large, low-power time readout on screen.
 
-eclock shows the current time, date, and time zone in an ordinary desktop
-window. It reads your system time zone at startup, handles DST offsets through
-the time library, and only repaints when the displayed time changes.
+eclock shows the current time, date, and time zone in a borderless, resizable
+window you can tile. It reads your system time zone at startup, handles DST
+offsets through the time library, and schedules idle repaints at the next
+displayed second or minute.
 
 ## Run
 
-You need a stable Rust toolchain. Install one with [rustup](https://rustup.rs/).
+You need Rust 1.95 or newer. Install a toolchain with [rustup](https://rustup.rs/).
 
 ```sh
 cargo run --release
@@ -37,6 +38,16 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev lib
 Use the equivalent packages for your distribution. macOS and Windows do not
 need extra system packages.
 
+## Window and tray
+
+The clock opens visibly and uses a tray icon (the menu bar on macOS) instead
+of a dock or taskbar entry. The tray menu offers **Show eclock**, **Hide eclock**,
+and **Quit**. Closing the window hides it; Quit saves preferences and exits.
+
+On Linux, tray operation uses X11 or XWayland and requires a desktop
+StatusNotifier tray host. Without both, eclock uses an ordinary taskbar entry
+and closing the window exits.
+
 ## Controls
 
 | Key / input | Action |
@@ -50,6 +61,8 @@ need extra system packages.
 | `F` | Toggle fullscreen |
 | `Esc` | Leave fullscreen |
 | `H` | Show/hide the hint line |
+| drag background | Move the window |
+| drag an edge or corner | Resize the window |
 
 The hourly alert, when enabled, tints the border near the top of the hour:
 amber from `:55`, then red from `:58`.
@@ -65,10 +78,21 @@ an `app.ron` file:
 
 Delete that file to reset the app to defaults.
 
+## Inspect the UI
+
+Build with the optional inspection feature and enable it at launch:
+
+```sh
+EGUI_INSPECTION=1 cargo run --features inspection
+```
+
+The egui MCP inspector can connect to `127.0.0.1:5719` to read the time, date,
+and zone labels, take screenshots, resize the window, and send input.
+Inspection is disabled unless enabled at runtime.
+
 ## Notes
 
-- The app appears as a normal window in your dock or taskbar. It does not use a
-  system tray or menu bar icon.
-- The icon source is `assets/icon.svg`; rebuild after editing it.
+- Icon sources are `assets/icon.svg` for the window and `assets/tray.svg` for
+  the tray; rebuild after editing them.
 - Basic colors, alert timing, zoom limits, and initial window size are set in
   `src/app.rs` and `src/main.rs`.

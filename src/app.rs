@@ -1,34 +1,29 @@
-//! Application state and rendering for the clock.
+//! Clock preferences, native window actions, and responsive clock-face rendering.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use chrono_tz::Tz;
 use eframe::egui;
-use egui::{Color32, CornerRadius, FontId, Galley, Painter, Pos2, Rect, Stroke, StrokeKind};
+use egui::{Color32, CornerRadius, FontId, Galley, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
-// ---- Look ----------------------------------------------------------------
-// Near-black background and a soft off-white, matching the source web clock.
+use crate::tray::{Action, Tray};
+
 const BG: Color32 = Color32::from_rgb(0x0a, 0x0b, 0x0d);
 const FG: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf3);
-
-// ---- Hour alert ----------------------------------------------------------
-// Eye-friendly, desaturated tones (not neon). Amber as the hour approaches,
-// red in the final stretch. Tune the two thresholds to taste.
-const WARN_RGB: (u8, u8, u8) = (0xCB, 0x9A, 0x3E); // muted amber
-const SOON_RGB: (u8, u8, u8) = (0xC2, 0x55, 0x50); // muted red
-const WARN_FROM_MINUTE: u32 = 55; // amber starts at :55  (5 min out)
-const SOON_FROM_MINUTE: u32 = 58; // red   starts at :58  (2 min out)
-
-// ---- Zoom ----------------------------------------------------------------
+const WARN_RGB: (u8, u8, u8) = (0xCB, 0x9A, 0x3E);
+const SOON_RGB: (u8, u8, u8) = (0xC2, 0x55, 0x50);
+const WARN_FROM_MINUTE: u32 = 55;
+const SOON_FROM_MINUTE: u32 = 58;
 const DEFAULT_SCALE: f32 = 1.8;
 const MIN_SCALE: f32 = 0.4;
 const MAX_SCALE: f32 = 3.0;
 const SCALE_STEP: f32 = 0.1;
+const HINT: &str = "S\u{a0}seconds  ·  +/-\u{a0}zoom  ·  0\u{a0}reset  ·  A\u{a0}alert  ·  F\u{a0}fullscreen  ·  H\u{a0}hints";
 
-/// Persisted between runs via eframe's storage (the `persistence` feature).
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+/// Preferences stored in eframe's existing app.ron format.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct Settings {
     show_seconds: bool,
@@ -48,48 +43,62 @@ impl Default for Settings {
     }
 }
 
-/// The running clock application.
-///
-/// Holds the persisted user [`Settings`], the display time zone resolved from
-/// the operating system at startup, and whether the window is currently
-/// fullscreen.
+impl Settings {
+    /// Restores saved preferences and clamps zoom to its supported range.
+    fn load(storage: Option<&dyn eframe::Storage>) -> Self {
+        let mut settings: Self = storage
+            .and_then(|storage| eframe::get_value(storage, eframe::APP_KEY))
+            .unwrap_or_default();
+        settings.scale = settings.scale.clamp(MIN_SCALE, MAX_SCALE);
+        settings
+    }
+}
+
+/// Clock preferences and the lifetime of its native window and tray.
 pub struct ClockApp {
     settings: Settings,
-    /// Resolved once at startup from the operating system.
     tz: Tz,
     fullscreen: bool,
+    tray: Option<Tray>,
+    quitting: bool,
+    taskbar_hidden: Option<bool>,
+    #[cfg(target_os = "macos")]
+    resizing: Option<(Rect, Pos2, egui::ResizeDirection)>,
 }
 
 impl ClockApp {
-    /// Creates the clock, restoring saved [`Settings`] from eframe's storage and
-    /// resolving the time zone from the operating system.
-    ///
-    /// A persisted zoom level is clamped back into the supported range, so a
-    /// hand-edited or stale settings file cannot produce an unusable text size.
-    ///
-    /// # Returns
-    ///
-    /// A ready-to-run [`ClockApp`].
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut settings: Settings = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
-            .unwrap_or_default();
-        settings.scale = settings.scale.clamp(MIN_SCALE, MAX_SCALE);
-
-        Self {
-            settings,
+    /// Restores preferences and creates the tray inside the running event loop.
+    pub fn new(cc: &eframe::CreationContext<'_>, tray_supported: bool) -> Self {
+        let tray = if tray_supported {
+            match Tray::new(&cc.egui_ctx) {
+                Ok(tray) => Some(tray),
+                Err(error) => {
+                    eprintln!("Tray unavailable: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut app = Self {
+            settings: Settings::load(cc.storage),
             tz: system_timezone(),
             fullscreen: false,
-        }
+            tray,
+            quitting: false,
+            taskbar_hidden: None,
+            #[cfg(target_os = "macos")]
+            resizing: None,
+        };
+        app.sync_taskbar(cc.winit_window().map(AsRef::as_ref));
+        app
     }
 
-    /// Which alert tone (if any) applies at the given minute-of-hour.
+    /// Selects the hourly alert color, if alerts are enabled.
     fn alert_rgb(&self, minute: u32) -> Option<(u8, u8, u8)> {
         if !self.settings.alert_enabled {
-            return None;
-        }
-        if minute >= SOON_FROM_MINUTE {
+            None
+        } else if minute >= SOON_FROM_MINUTE {
             Some(SOON_RGB)
         } else if minute >= WARN_FROM_MINUTE {
             Some(WARN_RGB)
@@ -98,201 +107,468 @@ impl ClockApp {
         }
     }
 
-    /// Applies one frame of keyboard and scroll input: toggles (seconds, alert,
-    /// hint, fullscreen), zoom changes, and leaving fullscreen on Escape.
-    fn handle_input(&mut self, ctx: &egui::Context) {
-        let mut zoom_in = false;
-        let mut zoom_out = false;
-        let mut reset = false;
-        let mut toggle_seconds = false;
-        let mut toggle_alert = false;
-        let mut toggle_hint = false;
-        let mut toggle_fullscreen = false;
-        let mut escape = false;
-        let mut scroll_y = 0.0;
-
-        ctx.input(|i| {
-            use egui::Key;
-            toggle_seconds = i.key_pressed(Key::S);
-            toggle_alert = i.key_pressed(Key::A);
-            toggle_hint = i.key_pressed(Key::H);
-            toggle_fullscreen = i.key_pressed(Key::F);
-            escape = i.key_pressed(Key::Escape);
-            zoom_in = i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals);
-            zoom_out = i.key_pressed(Key::Minus);
-            reset = i.key_pressed(Key::Num0);
-            scroll_y = i.smooth_scroll_delta.y;
-        });
-
-        if toggle_seconds {
-            self.settings.show_seconds = !self.settings.show_seconds;
-        }
-        if toggle_alert {
-            self.settings.alert_enabled = !self.settings.alert_enabled;
-        }
-        if toggle_hint {
-            self.settings.show_hint = !self.settings.show_hint;
-        }
-        if reset {
-            self.settings.scale = DEFAULT_SCALE;
-        }
-        if zoom_in {
-            self.settings.scale = (self.settings.scale + SCALE_STEP).min(MAX_SCALE);
-        }
-        if zoom_out {
-            self.settings.scale = (self.settings.scale - SCALE_STEP).max(MIN_SCALE);
-        }
-        if scroll_y != 0.0 {
-            self.settings.scale =
-                (self.settings.scale * (1.0 + scroll_y * 0.0015)).clamp(MIN_SCALE, MAX_SCALE);
-        }
-
-        if toggle_fullscreen {
-            self.fullscreen = !self.fullscreen;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
-        } else if escape && self.fullscreen {
-            self.fullscreen = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+    /// Applies a tray action; explicit Quit bypasses close-to-tray handling.
+    fn window_action(&mut self, ctx: &egui::Context, action: Action) {
+        use egui::ViewportCommand;
+        match action {
+            Action::Show => {
+                self.taskbar_hidden = None;
+                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+            }
+            Action::Hide => {
+                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            }
+            Action::Quit => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
         }
     }
 
-    /// Paints the full clock face for the given local time: the `HH·MM` digits
-    /// (with an optional seconds subscript), the date above, the time-zone
-    /// abbreviation below, and the alert border and hint line when enabled.
-    fn draw(&self, ui: &egui::Ui, now: DateTime<Tz>) {
-        let painter = ui.painter();
-        let rect = ui.max_rect();
-        let center = rect.center();
+    /// Cancels native closing only when it can hide to a usable tray.
+    fn close_window(&mut self, ctx: &egui::Context, tray_available: bool) {
+        if tray_available && !self.quitting {
+            self.window_action(ctx, Action::Hide);
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
 
-        // Font size is responsive to the window, then multiplied by the zoom.
-        let base = (rect.height() * 0.30).min(rect.width() * 0.16);
-        let fs = (base * self.settings.scale).clamp(20.0, 2000.0);
+    /// Applies taskbar presence initially and before revealing an unmapped window.
+    fn sync_taskbar(&mut self, window: Option<&winit::window::Window>) {
+        let hidden = self.tray.is_some();
+        if self.taskbar_hidden == Some(hidden) {
+            return;
+        }
+        if let Some(window) = window {
+            if let Err(error) = crate::platform::set_taskbar_hidden(window, hidden) {
+                eprintln!("Could not update taskbar presence: {error}");
+            }
+            self.taskbar_hidden = Some(hidden);
+        }
+    }
 
-        let big = FontId::monospace(fs);
-        let g_hh = painter.layout_no_wrap(format!("{:02}", now.hour()), big.clone(), FG);
-        let g_mm = painter.layout_no_wrap(format!("{:02}", now.minute()), big, FG);
-        let digit_w = g_hh.size().x;
-        let digit_h = g_hh.size().y;
+    /// Handles the existing keyboard toggles, fullscreen controls, and zoom.
+    fn handle_input(&mut self, ctx: &egui::Context) {
+        let was_fullscreen = self.fullscreen;
+        ctx.input(|input| {
+            use egui::Key;
+            if input.key_pressed(Key::S) {
+                self.settings.show_seconds = !self.settings.show_seconds;
+            }
+            if input.key_pressed(Key::A) {
+                self.settings.alert_enabled = !self.settings.alert_enabled;
+            }
+            if input.key_pressed(Key::H) {
+                self.settings.show_hint = !self.settings.show_hint;
+            }
+            if input.key_pressed(Key::Num0) {
+                self.settings.scale = DEFAULT_SCALE;
+            }
+            if input.key_pressed(Key::Plus) || input.key_pressed(Key::Equals) {
+                self.settings.scale = (self.settings.scale + SCALE_STEP).min(MAX_SCALE);
+            }
+            if input.key_pressed(Key::Minus) {
+                self.settings.scale = (self.settings.scale - SCALE_STEP).max(MIN_SCALE);
+            }
+            if input.smooth_scroll_delta.y != 0.0 {
+                self.settings.scale = (self.settings.scale
+                    * (1.0 + input.smooth_scroll_delta.y * 0.0015))
+                    .clamp(MIN_SCALE, MAX_SCALE);
+            }
+            if input.key_pressed(Key::F) {
+                self.fullscreen = !self.fullscreen;
+            } else if input.key_pressed(Key::Escape) && self.fullscreen {
+                self.fullscreen = false;
+            }
+        });
+        if self.fullscreen != was_fullscreen {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        }
+    }
 
-        let dot_d = fs * 0.13;
-        let gap = fs * 0.16;
-        let sec_margin = fs * 0.05;
-
-        let sec_galley = self.settings.show_seconds.then(|| {
-            painter.layout_no_wrap(
-                format!(":{:02}", now.second()),
-                FontId::monospace(fs * 0.34),
-                FG.gamma_multiply(0.55),
+    /// Handles background dragging and resizing through invisible window edges.
+    fn handle_pointer(&mut self, ui: &egui::Ui) {
+        if self.fullscreen {
+            return;
+        }
+        let ctx = ui.ctx();
+        let (position, pressed) = ctx.input(|input| {
+            (
+                input.pointer.interact_pos(),
+                input.pointer.primary_pressed(),
             )
         });
-        let sec_w = sec_galley.as_ref().map_or(0.0, |g| sec_margin + g.size().x);
-
-        let total_w = digit_w + gap + dot_d + gap + digit_w + sec_w;
-        let mut x = center.x - total_w / 2.0;
-        let cy = center.y;
-
-        painter.galley(Pos2::new(x, cy - digit_h / 2.0), g_hh, FG);
-        x += digit_w + gap;
-
-        painter.circle_filled(
-            Pos2::new(x + dot_d / 2.0, cy),
-            dot_d / 2.0,
-            FG.gamma_multiply(0.42),
-        );
-        x += dot_d + gap;
-
-        painter.galley(Pos2::new(x, cy - digit_h / 2.0), g_mm, FG);
-        x += digit_w;
-
-        if let Some(g) = sec_galley {
-            x += sec_margin;
-            let sh = g.size().y;
-            // Sit the seconds slightly low, like a subscript.
-            painter.galley(Pos2::new(x, cy - sh / 2.0 + digit_h * 0.12), g, FG);
+        let Some(position) = position else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        if self.resizing.is_some() {
+            self.resize_macos(ctx, position);
+            return;
         }
+        if !ui.max_rect().contains(position) {
+            return;
+        }
+        let direction = resize_direction(ui.max_rect(), position);
+        if let Some(direction) = direction {
+            ctx.set_cursor_icon(match direction {
+                egui::ResizeDirection::North | egui::ResizeDirection::South => {
+                    egui::CursorIcon::ResizeVertical
+                }
+                egui::ResizeDirection::East | egui::ResizeDirection::West => {
+                    egui::CursorIcon::ResizeHorizontal
+                }
+                egui::ResizeDirection::NorthEast | egui::ResizeDirection::SouthWest => {
+                    egui::CursorIcon::ResizeNeSw
+                }
+                egui::ResizeDirection::NorthWest | egui::ResizeDirection::SouthEast => {
+                    egui::CursorIcon::ResizeNwSe
+                }
+            });
+        }
+        if pressed {
+            #[cfg(target_os = "macos")]
+            if let Some(direction) = direction {
+                if let Some(rect) = ctx.input(|input| input.viewport().outer_rect) {
+                    self.resizing = Some((rect, rect.min + position.to_vec2(), direction));
+                }
+                return;
+            }
+            ctx.send_viewport_cmd(direction.map_or(
+                egui::ViewportCommand::StartDrag,
+                egui::ViewportCommand::BeginResize,
+            ));
+        }
+    }
 
-        // Date, above the time.
-        let date_fs = (fs * 0.105).clamp(11.0, 40.0);
-        let date = format!(
-            "{}, {} {}, {}",
-            now.format("%A"),
-            now.format("%B"),
-            now.day(),
-            now.year()
-        )
-        .to_uppercase();
-        let date_g = tracked(
-            painter,
-            &date,
-            FontId::monospace(date_fs),
-            FG.gamma_multiply(0.5),
-            date_fs * 0.28,
-        );
-        let date_y = (cy - digit_h / 2.0) - digit_h * 0.18 - date_g.size().y;
-        painter.galley(
-            Pos2::new(center.x - date_g.size().x / 2.0, date_y),
-            date_g,
-            FG,
-        );
+    /// Resizes macOS windows directly because winit's BeginResize is unsupported there.
+    #[cfg(target_os = "macos")]
+    fn resize_macos(&mut self, ctx: &egui::Context, position: Pos2) {
+        let (down, current) =
+            ctx.input(|input| (input.pointer.primary_down(), input.viewport().outer_rect));
+        if !down {
+            self.resizing = None;
+            return;
+        }
+        if let (Some((start, pointer, direction)), Some(current)) = (self.resizing, current) {
+            let delta = current.min + position.to_vec2() - pointer;
+            let rect = resized_rect(start, delta, direction);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(rect.min));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(rect.size()));
+        }
+    }
 
-        // Timezone abbreviation, below the time.
-        let tz_fs = (fs * 0.085).clamp(10.0, 32.0);
-        let tz = now.format("%Z").to_string();
-        let tz_g = tracked(
-            painter,
-            &tz,
-            FontId::monospace(tz_fs),
-            FG.gamma_multiply(0.32),
-            tz_fs * 0.22,
-        );
-        let tz_y = (cy + digit_h / 2.0) + digit_h * 0.10;
-        painter.galley(Pos2::new(center.x - tz_g.size().x / 2.0, tz_y), tz_g, FG);
-
+    /// Paints a measured clock face and exposes its readouts to accessibility/inspection.
+    fn draw(&self, ui: &egui::Ui, now: DateTime<Tz>) {
+        let rect = ui.max_rect();
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, BG);
+        let layout = ClockLayout::new(ui.painter(), rect, now, &self.settings);
+        layout.paint(ui, now);
         if let Some(rgb) = self.alert_rgb(now.minute()) {
-            draw_alert_border(painter, rect, rgb);
-        }
-        if self.settings.show_hint {
-            draw_hint(painter, rect);
+            draw_alert_border(ui.painter(), rect, rgb);
         }
     }
 }
 
 impl eframe::App for ClockApp {
-    /// Background color used to clear the framebuffer before painting.
+    /// Clears the native framebuffer to the clock background.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         BG.to_normalized_gamma_f32()
     }
 
-    /// Persists the current [`Settings`] so they are restored on the next launch.
+    /// Persists preferences on eframe's normal autosave and shutdown paths.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
     }
 
-    /// Handles input, paints one frame, and schedules the next repaint for the
-    /// moment the displayed value next changes (the next second or minute).
+    /// Processes native events even when hidden, without a periodic tray poll.
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        while let Some(action) = self.tray.as_ref().and_then(Tray::next_action) {
+            self.window_action(ctx, action);
+        }
+        if ctx.input(|input| input.viewport().close_requested()) {
+            let available = self.tray.is_some() && crate::platform::tray_supported();
+            self.close_window(ctx, available);
+        }
+        self.sync_taskbar(frame.winit_window().map(AsRef::as_ref));
+    }
+
+    /// Renders the current local time and schedules its next second/minute boundary.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.handle_input(&ctx);
-
-        let now_utc = Utc::now();
-        let now = now_utc.with_timezone(&self.tz);
-
-        // Paint our own background, then the clock on top. `clear_color` covers
-        // the framebuffer, but the wrapping panel draws its own fill over that,
-        // so we repaint the full rect here to guarantee the exact backdrop.
-        let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, BG);
-        self.draw(ui, now);
-
-        // Sleep until the next boundary that changes the display.
-        let wait = ms_to_next_tick(&now_utc, self.settings.show_seconds);
-        ctx.request_repaint_after(Duration::from_millis(wait));
+        self.handle_input(ui.ctx());
+        self.handle_pointer(ui);
+        let now = Utc::now();
+        self.draw(ui, now.with_timezone(&self.tz));
+        ui.ctx()
+            .request_repaint_after(Duration::from_millis(ms_to_next_tick(
+                &now,
+                self.settings.show_seconds,
+            )));
     }
 }
 
-/// Read the system IANA zone (e.g. `America/New_York`); fall back to UTC.
-/// chrono-tz applies the correct DST offset for any instant, so EDT/EST style
-/// transitions are handled automatically without re-reading the OS.
+/// Measured hours, minutes, and optional subscript seconds at one font size.
+struct TimeText {
+    hours: Arc<Galley>,
+    minutes: Arc<Galley>,
+    seconds: Option<Arc<Galley>>,
+    font_size: f32,
+}
+
+impl TimeText {
+    /// Shapes all time digits so fitting accounts for the optional seconds.
+    fn new(painter: &Painter, now: DateTime<Tz>, seconds: bool, font_size: f32) -> Self {
+        let font = FontId::monospace(font_size);
+        Self {
+            hours: painter.layout_no_wrap(format!("{:02}", now.hour()), font.clone(), FG),
+            minutes: painter.layout_no_wrap(format!("{:02}", now.minute()), font, FG),
+            seconds: seconds.then(|| {
+                painter.layout_no_wrap(
+                    format!(":{:02}", now.second()),
+                    FontId::monospace(font_size * 0.34),
+                    FG.gamma_multiply(0.65),
+                )
+            }),
+            font_size,
+        }
+    }
+
+    /// Returns the complete time row's dimensions, including dot, gaps, and seconds.
+    fn size(&self) -> Vec2 {
+        Vec2::new(
+            self.hours.size().x
+                + self.minutes.size().x
+                + self.font_size * 0.45
+                + self
+                    .seconds
+                    .as_ref()
+                    .map_or(0.0, |text| self.font_size * 0.05 + text.size().x),
+            self.hours.size().y.max(self.minutes.size().y),
+        )
+    }
+}
+
+/// Clock text and non-overlapping rectangles within the padded native viewport.
+struct ClockLayout {
+    time: TimeText,
+    time_rect: Rect,
+    date: Arc<Galley>,
+    date_rect: Rect,
+    zone: Arc<Galley>,
+    zone_rect: Rect,
+    hint: Option<Arc<Galley>>,
+    hint_rect: Option<Rect>,
+}
+
+impl ClockLayout {
+    /// Fits measured time digits after reserving independent caption and hint space.
+    fn new(painter: &Painter, rect: Rect, now: DateTime<Tz>, settings: &Settings) -> Self {
+        let short_side = rect.width().min(rect.height());
+        let padding = (short_side * 0.04).clamp(10.0, 24.0);
+        let gap = (short_side * 0.035).clamp(8.0, 24.0);
+        let mut body = rect.shrink(padding);
+        let width = body.width();
+        let date = caption(
+            painter,
+            &now.format("%A, %B %-d, %Y").to_string().to_uppercase(),
+            (short_side * 0.045).clamp(14.0, 24.0),
+            FG.gamma_multiply(0.65),
+            0.8,
+            width,
+        );
+        let zone = caption(
+            painter,
+            &now.format("%Z").to_string(),
+            (short_side * 0.035).clamp(12.0, 18.0),
+            FG.gamma_multiply(0.5),
+            0.8,
+            width,
+        );
+        let hint = settings
+            .show_hint
+            .then(|| caption(painter, HINT, 12.0, FG.gamma_multiply(0.4), 0.0, width));
+        let hint_rect = hint.as_ref().map(|text| {
+            let rect = Rect::from_min_size(
+                Pos2::new(
+                    body.center().x - text.size().x / 2.0,
+                    body.bottom() - text.size().y,
+                ),
+                text.size(),
+            );
+            body.max.y = rect.top() - gap;
+            rect
+        });
+        let available = Vec2::new(
+            width,
+            (body.height() - date.size().y - zone.size().y - gap * 2.0).max(1.0),
+        );
+        let requested = (rect.height() * 0.30).min(rect.width() * 0.16) * settings.scale;
+        let mut time = TimeText::new(painter, now, settings.show_seconds, requested);
+        loop {
+            let size = time.size();
+            let factor = (available.x / size.x).min(available.y / size.y).min(1.0);
+            let fitted = (time.font_size * factor).floor().max(1.0);
+            if factor >= 1.0 || fitted >= time.font_size {
+                break;
+            }
+            time = TimeText::new(painter, now, settings.show_seconds, fitted);
+        }
+        let height = date.size().y + time.size().y + zone.size().y + gap * 2.0;
+        let mut y = body.center().y - height / 2.0;
+        let date_rect = centered_row(body.center().x, y, date.size());
+        y = date_rect.bottom() + gap;
+        let time_rect = centered_row(body.center().x, y, time.size());
+        y = time_rect.bottom() + gap;
+        let zone_rect = centered_row(body.center().x, y, zone.size());
+        Self {
+            time,
+            time_rect,
+            date,
+            date_rect,
+            zone,
+            zone_rect,
+            hint,
+            hint_rect,
+        }
+    }
+
+    /// Paints text at its measured bounds and registers matching semantic labels.
+    fn paint(&self, ui: &egui::Ui, now: DateTime<Tz>) {
+        let painter = ui.painter();
+        let fs = self.time.font_size;
+        let mut position = self.time_rect.min;
+        paint_text(painter, position, &self.time.hours);
+        position.x += self.time.hours.size().x + fs * 0.16;
+        painter.circle_filled(
+            Pos2::new(position.x + fs * 0.065, self.time_rect.center().y),
+            fs * 0.065,
+            FG.gamma_multiply(0.42),
+        );
+        position.x += fs * 0.29;
+        paint_text(painter, position, &self.time.minutes);
+        if let Some(seconds) = &self.time.seconds {
+            position.x += self.time.minutes.size().x + fs * 0.05;
+            position.y =
+                self.time_rect.center().y - seconds.size().y / 2.0 + self.time_rect.height() * 0.12;
+            paint_text(painter, position, seconds);
+        }
+        semantic_label(
+            ui,
+            "time",
+            self.time_rect,
+            format!(
+                "Time: {}",
+                now.format(if self.time.seconds.is_some() {
+                    "%H:%M:%S"
+                } else {
+                    "%H:%M"
+                })
+            ),
+        );
+        paint_text(painter, self.date_rect.min, &self.date);
+        semantic_label(
+            ui,
+            "date",
+            self.date_rect,
+            format!("Date: {}", self.date.text()),
+        );
+        paint_text(painter, self.zone_rect.min, &self.zone);
+        semantic_label(
+            ui,
+            "zone",
+            self.zone_rect,
+            format!("Time zone: {}", self.zone.text()),
+        );
+        if let (Some(hint), Some(rect)) = (&self.hint, self.hint_rect) {
+            paint_text(painter, rect.min, hint);
+            semantic_label(ui, "hints", rect, HINT.to_owned());
+        }
+    }
+}
+
+/// Centers a measured text row horizontally at the given top coordinate.
+fn centered_row(center_x: f32, top: f32, size: Vec2) -> Rect {
+    Rect::from_min_size(Pos2::new(center_x - size.x / 2.0, top), size)
+}
+
+/// Paints a galley with its full layout bounds aligned to a top-left position.
+fn paint_text(painter: &Painter, position: Pos2, text: &Arc<Galley>) {
+    painter.galley(position - text.rect.min.to_vec2(), text.clone(), FG);
+}
+
+/// Registers readable content and logical bounds for directly painted text.
+fn semantic_label(ui: &egui::Ui, id: &str, rect: Rect, text: String) {
+    ui.interact(rect, ui.scope_id().with(id), egui::Sense::hover())
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &text));
+}
+
+/// Shapes a centered, wrapping caption with explicit font size and tracking.
+fn caption(
+    painter: &Painter,
+    text: &str,
+    size: f32,
+    color: Color32,
+    spacing: f32,
+    width: f32,
+) -> Arc<Galley> {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: FontId::monospace(size),
+            color,
+            extra_letter_spacing: spacing,
+            ..Default::default()
+        },
+    );
+    job.halign = egui::Align::Center;
+    job.wrap.max_width = width;
+    painter.layout_job(job)
+}
+
+/// Maps a six-point invisible edge or corner to its native resize direction.
+fn resize_direction(rect: Rect, position: Pos2) -> Option<egui::ResizeDirection> {
+    use egui::ResizeDirection::*;
+    let left = position.x < rect.left() + 6.0;
+    let right = position.x > rect.right() - 6.0;
+    let top = position.y < rect.top() + 6.0;
+    let bottom = position.y > rect.bottom() - 6.0;
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(NorthWest),
+        (_, true, true, _) => Some(NorthEast),
+        (true, _, _, true) => Some(SouthWest),
+        (_, true, _, true) => Some(SouthEast),
+        (true, _, _, _) => Some(West),
+        (_, true, _, _) => Some(East),
+        (_, _, true, _) => Some(North),
+        (_, _, _, true) => Some(South),
+        _ => None,
+    }
+}
+
+/// Resizes from a chosen edge while anchoring the opposite edge at the minimum size.
+#[cfg(any(target_os = "macos", test))]
+fn resized_rect(mut rect: Rect, delta: Vec2, direction: egui::ResizeDirection) -> Rect {
+    use egui::ResizeDirection::*;
+    if matches!(direction, West | NorthWest | SouthWest) {
+        rect.min.x = (rect.min.x + delta.x).min(rect.max.x - 320.0);
+    }
+    if matches!(direction, East | NorthEast | SouthEast) {
+        rect.max.x = (rect.max.x + delta.x).max(rect.min.x + 320.0);
+    }
+    if matches!(direction, North | NorthWest | NorthEast) {
+        rect.min.y = (rect.min.y + delta.y).min(rect.max.y - 200.0);
+    }
+    if matches!(direction, South | SouthWest | SouthEast) {
+        rect.max.y = (rect.max.y + delta.y).max(rect.min.y + 200.0);
+    }
+    rect
+}
+
+/// Resolves the system IANA zone once; chrono-tz supplies DST transitions.
 fn system_timezone() -> Tz {
     iana_time_zone::get_timezone()
         .ok()
@@ -300,66 +576,29 @@ fn system_timezone() -> Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
-/// Milliseconds until the next second (or minute) boundary, plus a small buffer
-/// so we wake just after the tick rather than a hair before it.
+/// Returns milliseconds through the next displayed tick, with a 25 ms buffer.
 fn ms_to_next_tick(now: &DateTime<Utc>, show_seconds: bool) -> u64 {
-    // Time-zone offsets are whole minutes everywhere, so UTC seconds and
-    // sub-seconds line up exactly with the local digits we render.
-    let sub_ms = (now.timestamp_subsec_millis() as i64).min(999);
+    let sub_ms = i64::from(now.timestamp_subsec_millis()).min(999);
     let ms = if show_seconds {
         1000 - sub_ms
     } else {
-        let sec = (now.second() as i64).min(59);
-        (60 - sec) * 1000 - sub_ms
+        (60 - i64::from(now.second()).min(59)) * 1000 - sub_ms
     };
-    const BUFFER_MS: i64 = 25;
-    (ms + BUFFER_MS).clamp(30, 60_000) as u64
+    (ms + 25).clamp(30, 60_000) as u64
 }
 
-/// Lay out a single run of text with extra letter spacing (Swiss-style tracking
-/// for the date / timezone / hint lines).
-fn tracked(
-    painter: &Painter,
-    text: &str,
-    font_id: FontId,
-    color: Color32,
-    spacing: f32,
-) -> Arc<Galley> {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        text,
-        0.0,
-        egui::TextFormat {
-            font_id,
-            color,
-            extra_letter_spacing: spacing,
-            ..Default::default()
-        },
-    );
-    painter.layout_job(job)
-}
-
-/// A soft, layered border in the alert color: a wide faint halo under a crisp edge.
+/// Paints the optional hourly alert as a faint halo beneath a crisp colored edge.
 fn draw_alert_border(painter: &Painter, rect: Rect, (r, g, b): (u8, u8, u8)) {
     let area = rect.shrink(7.0);
-    let radius = CornerRadius::same(14);
-    // (stroke width, alpha) from widest/faintest to thinnest/strongest.
     for (width, alpha) in [(16.0_f32, 26_u8), (7.0, 55), (2.5, 230)] {
-        let color = Color32::from_rgba_unmultiplied(r, g, b, alpha);
-        painter.rect_stroke(area, radius, Stroke::new(width, color), StrokeKind::Inside);
+        painter.rect_stroke(
+            area,
+            CornerRadius::same(14),
+            Stroke::new(width, Color32::from_rgba_unmultiplied(r, g, b, alpha)),
+            StrokeKind::Inside,
+        );
     }
 }
 
-fn draw_hint(painter: &Painter, rect: Rect) {
-    let text = "S seconds   \u{00B7}   +/- zoom   \u{00B7}   0 reset   \u{00B7}   A alert   \u{00B7}   F fullscreen   \u{00B7}   H hide";
-    let g = tracked(
-        painter,
-        text,
-        FontId::monospace(11.0),
-        FG.gamma_multiply(0.16),
-        1.0,
-    );
-    let x = rect.center().x - g.size().x / 2.0;
-    let y = rect.bottom() - g.size().y - 16.0;
-    painter.galley(Pos2::new(x, y), g, FG);
-}
+#[cfg(test)]
+mod tests;
