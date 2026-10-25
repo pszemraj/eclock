@@ -7,11 +7,14 @@ use eframe::{App, Storage};
 
 use super::*;
 
-const VIEWPORT_SIZES: [[f32; 2]; 4] = [
+const VIEWPORT_SIZES: [[f32; 2]; 7] = [
     [320.0, 200.0],
     [480.0, 320.0],
     [900.0, 520.0],
     [1440.0, 760.0],
+    [480.0, 2496.0],
+    [2560.0, 400.0],
+    [1400.0, 1332.0],
 ];
 
 #[derive(Default)]
@@ -40,7 +43,11 @@ fn clock() -> ClockApp {
         tz: chrono_tz::America::New_York,
         tray: None,
         quitting: false,
+        #[cfg(target_os = "windows")]
         taskbar_hidden: None,
+        window_state: None,
+        #[cfg(target_os = "linux")]
+        windowed_position: None,
         shortcuts_open: false,
         #[cfg(target_os = "macos")]
         resizing: None,
@@ -129,6 +136,30 @@ fn full_clock_fits_small_tiles_and_large_windows_at_all_zoom_limits() {
 }
 
 #[test]
+fn large_window_captions_use_large_fonts() {
+    let ctx = egui::Context::default();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 1332.0));
+    let _ = run_headless(
+        &ctx,
+        egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        },
+        |ui| {
+            let layout = ClockLayout::new(ui.painter(), rect, example_time(), &Settings::default());
+            for (text, minimum_size) in [
+                (&layout.date, 40.0),
+                (&layout.zone, 32.0),
+                (&layout.hint.as_ref().unwrap().0, 24.0),
+            ] {
+                assert!(text.job.sections[0].format.font_id.size >= minimum_size);
+                check_layout(&layout, rect);
+            }
+        },
+    );
+}
+
+#[test]
 fn existing_settings_restore_and_survive_save_reload() {
     let mut storage = MemoryStorage::default();
     storage.set_string(
@@ -149,6 +180,56 @@ fn existing_settings_restore_and_survive_save_reload() {
     app.save(&mut storage);
     assert_eq!(Settings::load(Some(&storage)), app.settings);
     assert_eq!(Settings::load(None), Settings::default());
+}
+
+#[test]
+fn clock_zoom_does_not_change_global_zoom_or_native_dimensions() {
+    let ctx = crate::persistence::egui_context();
+    let mut app = clock();
+    for key in [egui::Key::Minus, egui::Key::Equals, egui::Key::Num0] {
+        for modifiers in [egui::Modifiers::NONE, egui::Modifiers::COMMAND] {
+            let output = run_headless(&ctx, key_input(key, modifiers), |_| {
+                app.handle_input(&ctx);
+            });
+            assert_eq!(ctx.zoom_factor(), 1.0);
+            assert!(
+                !output.viewport_output[&egui::ViewportId::ROOT]
+                    .commands
+                    .iter()
+                    .any(|command| matches!(
+                        command,
+                        egui::ViewportCommand::InnerSize(_)
+                            | egui::ViewportCommand::MinInnerSize(_)
+                            | egui::ViewportCommand::OuterPosition(_)
+                    ))
+            );
+            let _ = run_headless(&ctx, Default::default(), |_| {});
+        }
+    }
+    let _ = run_headless(
+        &ctx,
+        key_input(egui::Key::Minus, egui::Modifiers::NONE),
+        |_| {
+            app.handle_input(&ctx);
+        },
+    );
+    assert!(app.settings.scale < DEFAULT_SCALE);
+}
+
+#[test]
+fn fixed_ui_zoom_preserves_native_display_scaling() {
+    for native_scale in [1.0, 1.25, 2.0] {
+        let ctx = crate::persistence::egui_context();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(native_scale);
+        let _ = run_headless(&ctx, input, |_| {});
+        assert_eq!(ctx.zoom_factor(), 1.0);
+        assert_eq!(ctx.pixels_per_point(), native_scale);
+    }
 }
 
 #[test]
@@ -242,30 +323,101 @@ fn close_without_a_tray_uses_normal_exit() {
 }
 
 #[test]
-fn fullscreen_keys_follow_native_state_and_release_the_input_lock() {
-    for (fullscreen, key, expected) in [
-        (false, egui::Key::F, Some(true)),
-        (true, egui::Key::F, Some(false)),
-        (true, egui::Key::Escape, Some(false)),
-        (false, egui::Key::Escape, None),
-    ] {
+fn tray_restore_and_fullscreen_exit_follow_native_position_policy() {
+    // The off-screen case represents a saved position on a disconnected monitor.
+    for position in [Pos2::new(1900.0, 880.0), Pos2::new(10000.0, 880.0)] {
         let ctx = egui::Context::default();
         let mut app = clock();
-        let mut input = key_input(key, egui::Modifiers::NONE);
+        let rect = Rect::from_min_size(position, Vec2::new(980.0, 580.0));
+        let mut input = egui::RawInput::default();
         input
             .viewports
             .get_mut(&egui::ViewportId::ROOT)
             .unwrap()
-            .fullscreen = Some(fullscreen);
+            .outer_rect = Some(rect);
+        let _ = run_headless(&ctx, input, |_| app.window_action(&ctx, Action::Hide));
+        #[cfg(target_os = "linux")]
+        assert_eq!(app.windowed_position, Some(position));
+
+        let expected_position = cfg!(target_os = "linux").then_some(position);
+
+        let output = run_headless(&ctx, Default::default(), |_| {
+            app.window_action(&ctx, Action::Show);
+        });
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::ViewportCommand::OuterPosition(position) => Some(*position),
+                    _ => None,
+                }),
+            expected_position
+        );
+
+        let mut input = key_input(egui::Key::Escape, egui::Modifiers::NONE);
+        let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+        viewport.fullscreen = Some(true);
+        viewport.outer_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(2560.0, 1440.0)));
         let output = run_headless(&ctx, input, |_| app.handle_input(&ctx));
-        let fullscreen = output.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .iter()
-            .find_map(|command| match command {
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::ViewportCommand::OuterPosition(position) => Some(*position),
+                    _ => None,
+                }),
+            expected_position
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(app.windowed_position, Some(position));
+    }
+}
+
+#[test]
+fn fullscreen_keys_follow_native_state_and_release_the_input_lock() {
+    for maximized in [false, true] {
+        for (fullscreen, key, expected) in [
+            (false, egui::Key::F, Some(true)),
+            (true, egui::Key::F, Some(false)),
+            (true, egui::Key::Escape, Some(false)),
+            (false, egui::Key::Escape, None),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = clock();
+            let mut normal_input = egui::RawInput::default();
+            normal_input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .outer_rect = Some(Rect::from_min_size(
+                Pos2::new(1900.0, 880.0),
+                Vec2::new(980.0, 580.0),
+            ));
+            let _ = run_headless(&ctx, normal_input, |_| app.handle_input(&ctx));
+            let mut input = key_input(key, egui::Modifiers::NONE);
+            let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+            viewport.fullscreen = Some(fullscreen);
+            viewport.maximized = Some(maximized);
+            let output = run_headless(&ctx, input, |_| app.handle_input(&ctx));
+            let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+            let fullscreen = commands.iter().find_map(|command| match command {
                 egui::ViewportCommand::Fullscreen(value) => Some(*value),
                 _ => None,
             });
-        assert_eq!(fullscreen, expected);
+            assert_eq!(fullscreen, expected);
+            if !cfg!(target_os = "linux") {
+                assert!(
+                    !commands.iter().any(|command| matches!(
+                        command,
+                        egui::ViewportCommand::OuterPosition(_)
+                            | egui::ViewportCommand::Maximized(_)
+                    )),
+                    "native fullscreen restoration was overridden: {commands:?}"
+                );
+            }
+        }
     }
 }
 
@@ -331,8 +483,8 @@ fn shortcut_reference_fits_extreme_viewports_and_scales_up_with_the_clock() {
     }
     assert!(menu_sizes[2].x > menu_sizes[0].x);
     assert!(menu_sizes[3].x > menu_sizes[2].x);
-    assert!(menu_sizes[6].x > menu_sizes[3].x);
-    assert!(menu_sizes[6].y > menu_sizes[2].y);
+    assert!(menu_sizes.last().unwrap().x > menu_sizes[3].x);
+    assert!(menu_sizes.last().unwrap().y > menu_sizes[2].y);
 }
 
 #[test]
@@ -488,8 +640,20 @@ fn macos_resize_anchors_opposite_edges_at_the_minimum_size() {
 #[test]
 #[ignore = "manual headless workflow; prints rendered bounds and restored preferences"]
 fn smoke_clock() {
-    let ctx = egui::Context::default();
+    let ctx = crate::persistence::egui_context();
     let mut app = clock();
+    let _ = run_headless(
+        &ctx,
+        key_input(egui::Key::Minus, egui::Modifiers::COMMAND),
+        |_| app.handle_input(&ctx),
+    );
+    assert_eq!(ctx.zoom_factor(), 1.0);
+    println!(
+        "Clock zoom={}, global UI zoom={}, native minimum={:?}",
+        app.settings.scale,
+        ctx.zoom_factor(),
+        MIN_WINDOW_SIZE
+    );
     for [width, height] in VIEWPORT_SIZES {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
         let input = egui::RawInput {

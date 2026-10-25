@@ -69,7 +69,12 @@ pub struct ClockApp {
     tz: Tz,
     tray: Option<Tray>,
     quitting: bool,
+    #[cfg(target_os = "windows")]
     taskbar_hidden: Option<bool>,
+    window_state: Option<crate::persistence::WindowState>,
+    // X11 can lose placement when unmapped; other platforms restore it natively.
+    #[cfg(target_os = "linux")]
+    windowed_position: Option<Pos2>,
     shortcuts_open: bool,
     #[cfg(target_os = "macos")]
     resizing: Option<(Rect, Pos2, egui::ResizeDirection)>,
@@ -81,11 +86,16 @@ impl ClockApp {
     /// # Arguments
     /// - `cc` - Native window, egui context, and persisted application storage.
     /// - `tray_supported` - Whether the window backend supports tray hide/restore.
+    /// - `legacy_window` - Saved geometry from the previous framework, if present.
     ///
     /// # Returns
     /// A clock with restored preferences, the system time zone, and a tray when
     /// native tray creation succeeds.
-    pub fn new(cc: &eframe::CreationContext<'_>, tray_supported: bool) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        tray_supported: bool,
+        legacy_window: Option<crate::persistence::LegacyWindow>,
+    ) -> Self {
         let tray = if tray_supported {
             match Tray::new(&cc.egui_ctx) {
                 Ok(tray) => Some(tray),
@@ -97,18 +107,25 @@ impl ClockApp {
         } else {
             None
         };
-        let mut app = Self {
+        Self {
             settings: Settings::load(cc.storage),
             tz: system_timezone(),
             tray,
             quitting: false,
+            #[cfg(target_os = "windows")]
             taskbar_hidden: None,
+            window_state: cc.winit_window().map(|window| {
+                legacy_window.map_or_else(
+                    || crate::persistence::WindowState::new(window.clone(), cc.storage),
+                    |saved| saved.restore(window.clone(), &cc.egui_ctx),
+                )
+            }),
+            #[cfg(target_os = "linux")]
+            windowed_position: crate::persistence::normal_position(cc),
             shortcuts_open: false,
             #[cfg(target_os = "macos")]
             resizing: None,
-        };
-        app.sync_taskbar(cc.winit_window().map(AsRef::as_ref));
-        app
+        }
     }
 
     /// Selects the hourly alert color, if alerts are enabled.
@@ -129,12 +146,25 @@ impl ClockApp {
         use egui::ViewportCommand;
         match action {
             Action::Show => {
-                self.taskbar_hidden = None;
+                #[cfg(target_os = "windows")]
+                {
+                    self.taskbar_hidden = None;
+                }
                 ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                #[cfg(target_os = "linux")]
+                if ctx.input(|input| {
+                    !input.viewport().fullscreen.unwrap_or(false)
+                        && !input.viewport().maximized.unwrap_or(false)
+                }) && let Some(position) = self.windowed_position
+                {
+                    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(position));
+                }
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
             Action::Hide => {
+                #[cfg(target_os = "linux")]
+                self.remember_position(ctx);
                 #[cfg(target_os = "linux")]
                 if ctx.input(|input| input.viewport().fullscreen.unwrap_or(false)) {
                     // Release fullscreen before X11 unmapping; winit restores it after mapping.
@@ -152,6 +182,24 @@ impl ClockApp {
         }
     }
 
+    /// Retains Linux windowed placement across unmapping and fullscreen changes.
+    #[cfg(target_os = "linux")]
+    fn remember_position(&mut self, ctx: &egui::Context) {
+        if self
+            .window_state
+            .as_ref()
+            .is_some_and(crate::persistence::WindowState::is_position_pending)
+        {
+            return;
+        }
+        ctx.input(|input| {
+            let viewport = input.viewport();
+            if !viewport.fullscreen.unwrap_or(false) && !viewport.maximized.unwrap_or(false) {
+                self.windowed_position = viewport.outer_rect.map(|rect| rect.min);
+            }
+        });
+    }
+
     /// Cancels native closing only when it can hide to a usable tray.
     fn close_window(&mut self, ctx: &egui::Context, tray_available: bool) {
         if tray_available && !self.quitting {
@@ -161,16 +209,15 @@ impl ClockApp {
     }
 
     /// Applies taskbar presence initially and before revealing an unmapped window.
+    #[cfg(target_os = "windows")]
     fn sync_taskbar(&mut self, window: Option<&winit::window::Window>) {
         let hidden = self.tray.is_some();
         if self.taskbar_hidden == Some(hidden) {
             return;
         }
         if let Some(window) = window {
-            match crate::platform::set_taskbar_hidden(window, hidden) {
-                Ok(()) => self.taskbar_hidden = Some(hidden),
-                Err(error) => eprintln!("Could not update taskbar presence: {error}"),
-            }
+            crate::platform::set_taskbar_hidden(window, hidden);
+            self.taskbar_hidden = Some(hidden);
         }
     }
 
@@ -183,6 +230,8 @@ impl ClockApp {
         if self.shortcuts_open {
             return;
         }
+        #[cfg(target_os = "linux")]
+        self.remember_position(ctx);
         let fullscreen = ctx.input(|input| {
             use egui::Key;
             if input.key_pressed(Key::S) {
@@ -219,6 +268,10 @@ impl ClockApp {
         });
         if let Some(fullscreen) = fullscreen {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
+            #[cfg(target_os = "linux")]
+            if !fullscreen && let Some(position) = self.windowed_position {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(position));
+            }
         }
     }
 
@@ -367,10 +420,16 @@ impl eframe::App for ClockApp {
     /// Persists preferences on eframe's normal autosave and shutdown paths.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
+        if let Some(window) = &mut self.window_state {
+            window.save(storage);
+        }
     }
 
     /// Processes native events even when hidden, without a periodic tray poll.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(window) = &mut self.window_state {
+            window.observe();
+        }
         while let Some(action) = self.tray.as_ref().and_then(Tray::next_action) {
             self.window_action(ctx, action);
         }
@@ -378,7 +437,9 @@ impl eframe::App for ClockApp {
             let available = self.tray.is_some() && crate::platform::tray_supported();
             self.close_window(ctx, available);
         }
+        #[cfg(target_os = "windows")]
         self.sync_taskbar(frame.winit_window().map(AsRef::as_ref));
+        let _ = frame;
     }
 
     /// Renders the current local time and schedules its next second/minute boundary.
@@ -459,21 +520,28 @@ impl ClockLayout {
         let date = caption(
             painter,
             &now.format("%A, %B %-d, %Y").to_string().to_uppercase(),
-            (short_side * 0.045).clamp(14.0, 24.0),
-            FG.gamma_multiply(0.65),
+            (short_side * 0.045).max(18.0),
+            FG.gamma_multiply(0.8),
             0.8,
             width,
         );
         let zone = caption(
             painter,
             &now.format("%Z").to_string(),
-            (short_side * 0.035).clamp(12.0, 18.0),
-            FG.gamma_multiply(0.5),
+            (short_side * 0.035).max(16.0),
+            FG.gamma_multiply(0.7),
             0.8,
             width,
         );
         let hint = settings.show_hint.then(|| {
-            let text = caption(painter, HINT, 12.0, FG.gamma_multiply(0.4), 0.0, width);
+            let text = caption(
+                painter,
+                HINT,
+                (short_side * 0.025).max(14.0),
+                FG.gamma_multiply(0.65),
+                0.0,
+                width,
+            );
             let rect = Rect::from_min_size(
                 Pos2::new(
                     body.center().x - text.size().x / 2.0,
