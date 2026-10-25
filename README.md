@@ -12,10 +12,11 @@ redraws once per second with seconds shown, or once per minute otherwise.
 You need Rust 1.95 or newer and a working OpenGL driver. Install a Rust
 toolchain with [rustup](https://rustup.rs/).
 
-On Debian/Ubuntu, install the Linux development libraries first:
+On Debian/Ubuntu, install the build and desktop-integration prerequisites first:
 
 ```sh
-sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+  libxkbcommon-dev desktop-file-utils
 ```
 
 Use equivalent packages on other Linux distributions. macOS and Windows do
@@ -44,6 +45,19 @@ To install it as a local command:
 cargo install --path . --locked
 eclock
 ```
+
+On Linux, register the application launcher and dock icon after installing the
+command. These commands use `desktop-file-install` from `desktop-file-utils`:
+
+```sh
+desktop_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+install -Dm644 assets/icon.svg "$desktop_data/icons/hicolor/scalable/apps/eclock.svg"
+desktop-file-install --dir="$desktop_data/applications" \
+  --set-key=Exec --set-value="\"$(command -v eclock)\"" assets/eclock.desktop
+```
+
+Reopen eclock after registering it. `cargo install` installs the executable;
+the launcher gives GNOME the application identity and icon used in the dock.
 
 ## Window and tray
 
