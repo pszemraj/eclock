@@ -27,7 +27,7 @@ fn main() -> eframe::Result<()> {
         .with_inner_size(
             legacy_window
                 .and_then(|window| window.inner_size_points)
-                .unwrap_or(egui::vec2(900.0, 520.0)),
+                .unwrap_or(egui::vec2(1280.0, 800.0)),
         )
         .with_min_inner_size(app::MIN_WINDOW_SIZE)
         .with_decorations(false)
