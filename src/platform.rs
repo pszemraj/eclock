@@ -51,7 +51,7 @@ pub(crate) fn configure(options: &mut eframe::NativeOptions, tray_supported: boo
 pub(crate) fn set_taskbar_hidden(
     window: &winit::window::Window,
     hidden: bool,
-) -> Result<(), String> {
+) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
         use winit::platform::windows::WindowExtWindows;
@@ -60,16 +60,56 @@ pub(crate) fn set_taskbar_hidden(
     #[cfg(target_os = "linux")]
     {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let handle = window.window_handle().map_err(|error| error.to_string())?;
+        use x11rb::{
+            connection::Connection,
+            protocol::xproto::{
+                AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, MapState, PropMode,
+            },
+            wrapper::ConnectionExt as _,
+        };
+        let handle = window.window_handle()?;
         let id = match handle.as_raw() {
-            RawWindowHandle::Xlib(handle) => {
-                u32::try_from(handle.window).map_err(|error| error.to_string())?
-            }
+            RawWindowHandle::Xlib(handle) => u32::try_from(handle.window)?,
             RawWindowHandle::Xcb(handle) => handle.window.get(),
             _ => return Ok(()),
         };
         // The X11 event loop and this connection both use the unchanged DISPLAY.
-        update_x11_taskbar(id, hidden).map_err(|error| error.to_string())?;
+        let (connection, _) = x11rb::connect(None)?;
+        let state = connection
+            .intern_atom(false, b"_NET_WM_STATE")?
+            .reply()?
+            .atom;
+        let skip = connection
+            .intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?
+            .reply()?
+            .atom;
+        if connection.get_window_attributes(id)?.reply()?.map_state == MapState::UNMAPPED {
+            let reply = connection
+                .get_property(false, id, state, AtomEnum::ATOM, 0, u32::MAX)?
+                .reply()?;
+            let current: Vec<_> = reply.value32().into_iter().flatten().collect();
+            connection
+                .change_property32(
+                    PropMode::REPLACE,
+                    id,
+                    state,
+                    AtomEnum::ATOM,
+                    &taskbar_state(&current, skip, hidden),
+                )?
+                .check()?;
+        } else {
+            let root = connection.get_geometry(id)?.reply()?.root;
+            let event = ClientMessageEvent::new(32, id, state, [u32::from(hidden), skip, 0, 1, 0]);
+            connection
+                .send_event(
+                    false,
+                    root,
+                    EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                    event,
+                )?
+                .check()?;
+        }
+        connection.flush()?;
     }
     let _ = (window, hidden);
     Ok(())
@@ -87,55 +127,6 @@ fn taskbar_state(current: &[u32], skip: u32, hidden: bool) -> Vec<u32> {
         state.push(skip);
     }
     state
-}
-
-/// Applies the EWMH hint before mapping, or asks the window manager to update it.
-#[cfg(target_os = "linux")]
-fn update_x11_taskbar(window: u32, hidden: bool) -> Result<(), Box<dyn std::error::Error>> {
-    use x11rb::{
-        connection::Connection,
-        protocol::xproto::{
-            AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, MapState, PropMode,
-        },
-        wrapper::ConnectionExt as _,
-    };
-    let (connection, _) = x11rb::connect(None)?;
-    let state = connection
-        .intern_atom(false, b"_NET_WM_STATE")?
-        .reply()?
-        .atom;
-    let skip = connection
-        .intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?
-        .reply()?
-        .atom;
-    if connection.get_window_attributes(window)?.reply()?.map_state == MapState::UNMAPPED {
-        let reply = connection
-            .get_property(false, window, state, AtomEnum::ATOM, 0, u32::MAX)?
-            .reply()?;
-        let current: Vec<_> = reply.value32().into_iter().flatten().collect();
-        connection
-            .change_property32(
-                PropMode::REPLACE,
-                window,
-                state,
-                AtomEnum::ATOM,
-                &taskbar_state(&current, skip, hidden),
-            )?
-            .check()?;
-    } else {
-        let root = connection.get_geometry(window)?.reply()?.root;
-        let event = ClientMessageEvent::new(32, window, state, [u32::from(hidden), skip, 0, 1, 0]);
-        connection
-            .send_event(
-                false,
-                root,
-                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-                event,
-            )?
-            .check()?;
-    }
-    connection.flush()?;
-    Ok(())
 }
 
 #[cfg(test)]
