@@ -12,11 +12,11 @@ redraws once per second with seconds shown, or once per minute otherwise.
 You need Rust 1.95 or newer and a working OpenGL driver. Install a Rust
 toolchain with [rustup](https://rustup.rs/).
 
-On Debian/Ubuntu, install the build prerequisites first:
+On Debian/Ubuntu, install the build and desktop-installation prerequisites first:
 
 ```sh
 sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-  libxkbcommon-dev
+  libxkbcommon-dev desktop-file-utils
 ```
 
 Use equivalent packages on other Linux distributions. macOS and Windows do
@@ -39,17 +39,37 @@ cargo build --release --locked
 ./target/release/eclock
 ```
 
-To install it as a local command:
+To install on Linux with an application launcher and dock icon:
+
+```sh
+./scripts/install-linux.sh
+eclock
+```
+
+On macOS and Windows, install with Cargo:
 
 ```sh
 cargo install --path . --locked
 eclock
 ```
 
-On Linux, eclock registers its application launcher and dock icon automatically
-when it starts. Both assets are embedded in the executable; no extra installation
-commands or source checkout are needed after `cargo install`. The launcher points
-to the executable you ran and is updated if you move or reinstall it.
+The Linux installer runs Cargo and installs the desktop assets. It uses
+`$CARGO_INSTALL_ROOT/bin` when set, or your Cargo home's `bin`
+directory (normally `~/.cargo/bin`). It installs independent copies of
+the launcher and icon. Installed applications on all platforms survive
+`cargo clean` in the checkout. Running a checkout build leaves the installed
+launcher and icon untouched.
+
+To uninstall the Linux desktop installation while keeping clock preferences:
+
+```sh
+./scripts/uninstall-linux.sh
+```
+
+Use the same installation environment if you customized the Cargo or XDG data
+locations. The Linux installer uses `desktop-file-utils`; the clock itself does
+not require this utility. On macOS and Windows, uninstall with
+`cargo uninstall eclock`.
 
 ## Window and tray
 
@@ -103,7 +123,7 @@ restored automatically. Settings are stored at:
 
 Delete that file to reset the app to defaults.
 
-On Linux, eclock also keeps its bundled `icon.svg` beside `app.ron` and manages
+On Linux, the installer copies `icon.svg` beside `app.ron` and creates
 `$XDG_DATA_HOME/applications/eclock.desktop` (usually
 `~/.local/share/applications/eclock.desktop`). The launcher uses the icon's
 absolute path so the dock does not depend on an icon-theme cache refresh.
@@ -123,10 +143,13 @@ Inspection is disabled unless enabled at runtime.
 ## Notes
 
 - Icon sources are `assets/icon.svg` for the window/dock and `assets/tray.svg` for
-  the tray; rebuild after editing them. Launching the rebuilt executable updates
-  the Linux launcher and dock icon.
+  the tray; rebuild after editing them. Rerun the Linux installer to update the
+  installed executable and dock icon.
 - Basic colors, alert timing, zoom limits, and initial window size are set in
   `src/app.rs` and `src/main.rs`.
+- On Linux, `./scripts/smoke-install-linux.sh` checks installation, checkout
+  launch isolation, cleanup with `cargo clean`, and uninstall. It requires GJS
+  and removes the checkout's build artifacts; logs remain in `.install-smoke`.
 
 ## License
 
