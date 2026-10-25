@@ -103,3 +103,12 @@ Inspection is disabled unless enabled at runtime.
   the tray; rebuild after editing them.
 - Basic colors, alert timing, zoom limits, and initial window size are set in
   `src/app.rs` and `src/main.rs`.
+
+## License
+
+Copyright (c) 2026 Peter Szemraj.
+
+eclock is licensed under either the [MIT License](LICENSE-MIT) or the
+[Apache License, Version 2.0](LICENSE-APACHE), at your option. Dependencies,
+including egui's [bundled fonts](https://github.com/emilk/egui/tree/0.37.0/crates/epaint_default_fonts/fonts),
+retain their own licenses.
