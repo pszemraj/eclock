@@ -22,7 +22,7 @@ const MAX_SCALE: f32 = 3.0;
 const SCALE_STEP: f32 = 0.1;
 const HINT: &str = "S\u{a0}seconds  ·  +/-\u{a0}zoom  ·  0\u{a0}reset  ·  A\u{a0}alert  ·  F\u{a0}fullscreen  ·  H\u{a0}hints";
 
-/// Preferences stored in eframe's existing app.ron format.
+/// Preferences persisted in eframe's app.ron file.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct Settings {
@@ -67,7 +67,15 @@ pub struct ClockApp {
 }
 
 impl ClockApp {
-    /// Restores preferences and creates the tray inside the running event loop.
+    /// Initializes the clock inside the running native event loop.
+    ///
+    /// # Arguments
+    /// - `cc` - Native window, egui context, and persisted application storage.
+    /// - `tray_supported` - Whether the window backend supports tray hide/restore.
+    ///
+    /// # Returns
+    /// A clock with restored preferences, the system time zone, and a tray when
+    /// native tray creation succeeds.
     pub fn new(cc: &eframe::CreationContext<'_>, tray_supported: bool) -> Self {
         let tray = if tray_supported {
             match Tray::new(&cc.egui_ctx) {
@@ -149,7 +157,7 @@ impl ClockApp {
         }
     }
 
-    /// Handles the existing keyboard toggles, fullscreen controls, and zoom.
+    /// Handles keyboard toggles, fullscreen controls, and zoom.
     fn handle_input(&mut self, ctx: &egui::Context) {
         let was_fullscreen = self.fullscreen;
         ctx.input(|input| {

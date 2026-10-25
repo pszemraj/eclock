@@ -1,6 +1,10 @@
 //! Native backend selection and taskbar presence for an ordinary tiled window.
 
-/// Whether this desktop supports both a tray icon and window hide/restore.
+/// Checks whether tray-backed window hide/restore can be attempted.
+///
+/// # Returns
+/// On Linux, whether X11 and a registered StatusNotifier host are available.
+/// Other supported platforms return `true`; tray creation checks native support.
 pub(crate) fn tray_supported() -> bool {
     #[cfg(target_os = "linux")]
     return x11rb::connect(None).is_ok() && crate::tray::linux_host_available();
@@ -9,6 +13,10 @@ pub(crate) fn tray_supported() -> bool {
 }
 
 /// Selects X11 for Linux tray operation and accessory activation on macOS.
+///
+/// # Arguments
+/// - `options` - Native options to configure before creating the event loop.
+/// - `tray_supported` - Whether Linux should use X11 for tray hide/restore.
 pub(crate) fn configure(options: &mut eframe::NativeOptions, tray_supported: bool) {
     #[cfg(target_os = "linux")]
     if tray_supported {
@@ -29,7 +37,17 @@ pub(crate) fn configure(options: &mut eframe::NativeOptions, tray_supported: boo
 
 /// Updates taskbar exclusion, preserving X11 fullscreen and other state hints.
 ///
-/// macOS uses activation policy instead. Returns native handle or protocol errors.
+/// macOS uses activation policy instead.
+///
+/// # Arguments
+/// - `window` - Native window whose taskbar presence should change.
+/// - `hidden` - Whether to exclude the window from the taskbar.
+///
+/// # Returns
+/// `Ok(())` after submitting the hint, or when this backend does not use it.
+///
+/// # Errors
+/// Returns native handle, X11 connection, or protocol errors.
 pub(crate) fn set_taskbar_hidden(
     window: &winit::window::Window,
     hidden: bool,

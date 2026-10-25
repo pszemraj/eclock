@@ -25,7 +25,11 @@ pub(crate) struct Tray {
 impl Tray {
     /// Creates the tray on the running native event-loop thread.
     ///
-    /// Returns an error if the native menu or bundled icon cannot be created.
+    /// # Returns
+    /// The tray lifetime guard and action receiver; native events wake `ctx`.
+    ///
+    /// # Errors
+    /// Returns menu creation, icon rendering, or native tray registration errors.
     pub(crate) fn new(ctx: &egui::Context) -> Result<Self, String> {
         let menu = Menu::new();
         let show = MenuItem::new("Show eclock", true, None);
@@ -84,12 +88,18 @@ impl Tray {
     }
 
     /// Takes the next pending native action without blocking.
+    ///
+    /// # Returns
+    /// The next Show, Hide, or Quit action, or `None` when none is pending.
     pub(crate) fn next_action(&self) -> Option<Action> {
         self.actions.try_recv().ok()
     }
 }
 
 /// Reports whether Linux exposes a registered StatusNotifier tray host.
+///
+/// # Returns
+/// Whether the session bus reports a tray host; `false` if absent or unreachable.
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_host_available() -> bool {
     let Ok(connection) = zbus::blocking::connection::Builder::session().and_then(|builder| {

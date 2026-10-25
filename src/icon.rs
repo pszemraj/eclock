@@ -6,12 +6,18 @@ use resvg::{tiny_skia, usvg};
 /// Side length, in pixels, of the square bitmap the icon is rasterized to.
 const ICON_SIZE: u32 = 256;
 
-/// Renders the window icon as straight-alpha RGBA, or returns None on failure.
+/// Rasterizes the bundled window SVG.
+///
+/// # Returns
+/// Straight-alpha RGBA pixels, or `None` if SVG parsing or pixel allocation fails.
 pub(crate) fn icon() -> Option<egui::IconData> {
     rasterize(include_str!("../assets/icon.svg"), ICON_SIZE)
 }
 
 /// Renders the transparent clock glyph used by native tray and menu-bar icons.
+///
+/// # Returns
+/// A 32-by-32 RGBA icon, or `None` if SVG parsing or pixel allocation fails.
 pub(crate) fn tray_icon() -> Option<egui::IconData> {
     rasterize(include_str!("../assets/tray.svg"), 32)
 }

@@ -1,19 +1,34 @@
 # eclock
 
-A small desktop clock for keeping a large, low-power time readout on screen.
+A large desktop clock in a borderless, resizable window you can tile.
 
-eclock shows the current time, date, and time zone in a borderless, resizable
-window you can tile. It reads your system time zone at startup, handles DST
-offsets through the time library, and schedules idle repaints at the next
-displayed second or minute.
+![eclock showing local time, date, time zone, and keyboard hints](assets/screenshot.png)
+
+eclock reads your system time zone at startup and handles DST. At rest, it
+redraws once per second with seconds shown, or once per minute otherwise.
 
 ## Run
 
-You need Rust 1.95 or newer. Install a toolchain with [rustup](https://rustup.rs/).
+You need Rust 1.95 or newer and a working OpenGL driver. Install a Rust
+toolchain with [rustup](https://rustup.rs/).
+
+On Debian/Ubuntu, install the Linux development libraries first:
+
+```sh
+sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+```
+
+Use equivalent packages on other Linux distributions. macOS and Windows do
+not need extra system packages.
+
+From a checkout of this repository:
 
 ```sh
 cargo run --release
 ```
+
+The clock window opens with your local time, date, and time zone. Press `S`
+to show seconds or `H` to hide the shortcut hints.
 
 To build once and test the local binary directly:
 
@@ -28,15 +43,6 @@ To install it as a local command:
 cargo install --path . --locked
 eclock
 ```
-
-On Linux, eframe needs X11/Wayland and OpenGL development libraries:
-
-```sh
-sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-```
-
-Use the equivalent packages for your distribution. macOS and Windows do not
-need extra system packages.
 
 ## Window and tray
 
