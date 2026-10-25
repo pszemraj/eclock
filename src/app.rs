@@ -20,7 +20,13 @@ const DEFAULT_SCALE: f32 = 1.8;
 const MIN_SCALE: f32 = 0.4;
 const MAX_SCALE: f32 = 3.0;
 const SCALE_STEP: f32 = 0.1;
-const HINT: &str = "S\u{a0}seconds  ·  +/-\u{a0}zoom  ·  0\u{a0}reset  ·  A\u{a0}alert  ·  F\u{a0}fullscreen  ·  H\u{a0}hints";
+const HINT: &str = "Ctrl+/ shortcuts";
+const SHORTCUTS: &[(&str, &str)] = &[
+    ("Seconds", "S"),
+    ("Hourly alert", "A"),
+    ("Fullscreen", "F"),
+    ("Shortcut prompt", "H"),
+];
 
 /// Smallest viewport supported by the clock layout and native resize edges.
 pub(crate) const MIN_WINDOW_SIZE: Vec2 = Vec2::new(320.0, 200.0);
@@ -64,6 +70,7 @@ pub struct ClockApp {
     tray: Option<Tray>,
     quitting: bool,
     taskbar_hidden: Option<bool>,
+    shortcuts_open: bool,
     #[cfg(target_os = "macos")]
     resizing: Option<(Rect, Pos2, egui::ResizeDirection)>,
 }
@@ -96,6 +103,7 @@ impl ClockApp {
             tray,
             quitting: false,
             taskbar_hidden: None,
+            shortcuts_open: false,
             #[cfg(target_os = "macos")]
             resizing: None,
         };
@@ -166,8 +174,15 @@ impl ClockApp {
         }
     }
 
-    /// Handles keyboard toggles, fullscreen controls, and zoom.
+    /// Handles the shortcut menu, clock toggles, fullscreen controls, and zoom.
     fn handle_input(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Slash)) {
+            self.shortcuts_open = !self.shortcuts_open;
+            return;
+        }
+        if self.shortcuts_open {
+            return;
+        }
         let fullscreen = ctx.input(|input| {
             use egui::Key;
             if input.key_pressed(Key::S) {
@@ -209,6 +224,9 @@ impl ClockApp {
 
     /// Handles background dragging and resizing through invisible window edges.
     fn handle_pointer(&mut self, ui: &egui::Ui) {
+        if self.shortcuts_open {
+            return;
+        }
         let ctx = ui.ctx();
         let (position, pressed, fullscreen) = ctx.input(|input| {
             (
@@ -289,6 +307,55 @@ impl ClockApp {
             draw_alert_border(ui.painter(), rect, rgb);
         }
     }
+
+    /// Displays the centered, responsive shortcut reference and handles dismissal.
+    fn shortcuts_ui(&mut self, ctx: &egui::Context) {
+        if !self.shortcuts_open {
+            return;
+        }
+        let viewport = ctx.content_rect().size();
+        let scale = (viewport.x.min(viewport.y) / 520.0).clamp(1.0, 2.0);
+        let available = viewport - Vec2::splat(32.0 * scale);
+        let width = (viewport.x * 0.6)
+            .clamp(280.0 * scale, 720.0 * scale)
+            .min(available.x);
+        let modal = egui::Modal::new(egui::Id::unique("keyboard-shortcuts")).show(ctx, |ui| {
+            ui.set_width(width);
+            ui.set_max_height(available.y);
+            ui.visuals_mut().override_text_color = Some(FG);
+            for font in ui.style_mut().text_styles.values_mut() {
+                font.family = egui::FontFamily::Monospace;
+                font.size *= scale;
+            }
+            ui.spacing_mut().item_spacing *= scale;
+            ui.spacing_mut().button_padding *= scale;
+            ui.horizontal(|ui| {
+                ui.heading("Keyboard shortcuts");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        ui.close();
+                    }
+                });
+            });
+            ui.separator();
+            for (action, keys) in SHORTCUTS {
+                ui.horizontal(|ui| {
+                    ui.label(*action);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(*keys)
+                                .monospace()
+                                .color(FG.gamma_multiply(0.65)),
+                        );
+                    });
+                });
+            }
+        });
+        if modal.should_close() {
+            self.shortcuts_open = false;
+            ctx.request_repaint();
+        }
+    }
 }
 
 impl eframe::App for ClockApp {
@@ -320,6 +387,7 @@ impl eframe::App for ClockApp {
         self.handle_pointer(ui);
         let now = Utc::now();
         self.draw(ui, now.with_timezone(&self.tz));
+        self.shortcuts_ui(ui.ctx());
         ui.ctx()
             .request_repaint_after(Duration::from_millis(ms_to_next_tick(
                 &now,

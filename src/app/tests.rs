@@ -41,6 +41,7 @@ fn clock() -> ClockApp {
         tray: None,
         quitting: false,
         taskbar_hidden: None,
+        shortcuts_open: false,
         #[cfg(target_os = "macos")]
         resizing: None,
     }
@@ -62,6 +63,20 @@ fn run_headless(
     let mut output = ctx.run_ui(input, ui);
     output.textures_delta.clear();
     output
+}
+
+/// Builds a single logical key press with explicit modifiers.
+fn key_input(key: egui::Key, modifiers: egui::Modifiers) -> egui::RawInput {
+    egui::RawInput {
+        events: vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }],
+        ..Default::default()
+    }
 }
 
 /// Checks that every text rectangle fits and that adjacent rows remain separate.
@@ -236,16 +251,7 @@ fn fullscreen_keys_follow_native_state_and_release_the_input_lock() {
     ] {
         let ctx = egui::Context::default();
         let mut app = clock();
-        let mut input = egui::RawInput {
-            events: vec![egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: Default::default(),
-            }],
-            ..Default::default()
-        };
+        let mut input = key_input(key, egui::Modifiers::NONE);
         input
             .viewports
             .get_mut(&egui::ViewportId::ROOT)
@@ -261,6 +267,148 @@ fn fullscreen_keys_follow_native_state_and_release_the_input_lock() {
             });
         assert_eq!(fullscreen, expected);
     }
+}
+
+#[test]
+fn shortcut_reference_requires_ctrl_slash_and_toggles_closed() {
+    for (modifiers, opens) in [
+        (egui::Modifiers::NONE, false),
+        (egui::Modifiers::CTRL, true),
+        (
+            egui::Modifiers {
+                mac_cmd: true,
+                command: true,
+                ..egui::Modifiers::NONE
+            },
+            false,
+        ),
+    ] {
+        let ctx = egui::Context::default();
+        let mut app = clock();
+        let _ = run_headless(&ctx, key_input(egui::Key::Slash, modifiers), |_| {
+            app.handle_input(&ctx);
+        });
+        assert_eq!(app.shortcuts_open, opens);
+        if opens {
+            let _ = run_headless(&ctx, key_input(egui::Key::Slash, modifiers), |_| {
+                app.handle_input(&ctx);
+            });
+            assert!(!app.shortcuts_open);
+        }
+    }
+}
+
+#[test]
+fn shortcut_reference_fits_extreme_viewports_and_scales_up_with_the_clock() {
+    let mut menu_sizes = Vec::new();
+    let ctx = egui::Context::default();
+    let mut app = clock();
+    app.shortcuts_open = true;
+    for [width, height] in
+        VIEWPORT_SIZES
+            .into_iter()
+            .chain([[320.0, 1200.0], [2000.0, 220.0], [3840.0, 2160.0]])
+    {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
+        for _ in 0..3 {
+            let _ = run_headless(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    ..Default::default()
+                },
+                |_| app.shortcuts_ui(&ctx),
+            );
+        }
+        let menu = ctx
+            .memory(|memory| memory.area_rect(egui::Id::unique("keyboard-shortcuts")))
+            .unwrap();
+        assert!(
+            viewport.contains_rect(menu),
+            "{menu:?} outside {viewport:?}"
+        );
+        menu_sizes.push(menu.size());
+    }
+    assert!(menu_sizes[2].x > menu_sizes[0].x);
+    assert!(menu_sizes[3].x > menu_sizes[2].x);
+    assert!(menu_sizes[6].x > menu_sizes[3].x);
+    assert!(menu_sizes[6].y > menu_sizes[2].y);
+}
+
+#[test]
+fn shortcut_reference_blocks_clock_actions_and_escape_only_closes_the_menu() {
+    let ctx = egui::Context::default();
+    let mut app = clock();
+    app.shortcuts_open = true;
+    app.settings.scale = 2.3;
+    let rect = Rect::from_min_size(Pos2::ZERO, MIN_WINDOW_SIZE);
+    let _ = run_headless(
+        &ctx,
+        egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        },
+        |_| app.shortcuts_ui(&ctx),
+    );
+    let settings = app.settings.clone();
+    let mut input = key_input(egui::Key::S, egui::Modifiers::NONE);
+    input.screen_rect = Some(rect);
+    input.events.extend(
+        [
+            egui::Key::A,
+            egui::Key::H,
+            egui::Key::F,
+            egui::Key::Plus,
+            egui::Key::Num0,
+        ]
+        .into_iter()
+        .flat_map(|key| key_input(key, egui::Modifiers::NONE).events),
+    );
+    input.events.extend([
+        egui::Event::PointerMoved(Pos2::new(1.0, 1.0)),
+        egui::Event::PointerButton {
+            pos: Pos2::new(1.0, 1.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]);
+    let output = run_headless(&ctx, input, |ui| {
+        app.handle_input(&ctx);
+        app.handle_pointer(ui);
+        app.shortcuts_ui(&ctx);
+    });
+    assert_eq!(app.settings, settings);
+    assert!(
+        !output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|command| matches!(
+                command,
+                egui::ViewportCommand::StartDrag
+                    | egui::ViewportCommand::BeginResize(_)
+                    | egui::ViewportCommand::Fullscreen(_)
+            ))
+    );
+
+    let mut input = key_input(egui::Key::Escape, egui::Modifiers::NONE);
+    input.screen_rect = Some(rect);
+    input
+        .viewports
+        .get_mut(&egui::ViewportId::ROOT)
+        .unwrap()
+        .fullscreen = Some(true);
+    let output = run_headless(&ctx, input, |_| {
+        app.handle_input(&ctx);
+        app.shortcuts_ui(&ctx);
+    });
+    assert!(!app.shortcuts_open);
+    assert!(
+        !output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(_)))
+    );
 }
 
 #[test]
@@ -346,14 +494,7 @@ fn smoke_clock() {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
         let input = egui::RawInput {
             screen_rect: Some(rect),
-            events: vec![egui::Event::Key {
-                key: egui::Key::S,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: Default::default(),
-            }],
-            ..Default::default()
+            ..key_input(egui::Key::S, egui::Modifiers::NONE)
         };
         let _ = run_headless(&ctx, input, |ui| {
             app.handle_input(&ctx);

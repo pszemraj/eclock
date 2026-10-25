@@ -2,7 +2,7 @@
 
 A large desktop clock in a borderless, resizable window you can tile.
 
-![eclock showing local time, date, time zone, and keyboard hints](assets/screenshot.png)
+![eclock showing local time, date, time zone, and the shortcut prompt](assets/screenshot.png)
 
 eclock reads your system time zone at startup and handles DST. At rest, it
 redraws once per second with seconds shown, or once per minute otherwise.
@@ -27,8 +27,8 @@ From a checkout of this repository:
 cargo run --release
 ```
 
-The clock window opens with your local time, date, and time zone. Press `S`
-to show seconds or `H` to hide the shortcut hints.
+The clock window opens with your local time, date, and time zone. Press `Ctrl+/`
+for the keyboard shortcuts menu, or `S` to show seconds.
 
 To build once and test the local binary directly:
 
@@ -58,6 +58,7 @@ and closing the window exits.
 
 | Key / input | Action |
 | --- | --- |
+| `Ctrl+/` | Open/close the keyboard shortcuts menu |
 | `S` | Toggle seconds |
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
@@ -65,8 +66,8 @@ and closing the window exits.
 | `0` | Reset zoom |
 | `A` | Toggle hourly alert |
 | `F` | Toggle fullscreen |
-| `Esc` | Leave fullscreen |
-| `H` | Show/hide the hint line |
+| `Esc` | Close the shortcuts menu, or leave fullscreen |
+| `H` | Show/hide the shortcut prompt |
 | drag background | Move the window |
 | drag an edge or corner | Resize the window |
 
@@ -75,8 +76,8 @@ amber from `:55`, then red from `:58`.
 
 ## Settings
 
-eclock remembers seconds visibility, zoom, alert state, and hint visibility in
-an `app.ron` file:
+eclock remembers seconds visibility, zoom, alert state, and shortcut prompt
+visibility in an `app.ron` file:
 
 - **Linux:** `$XDG_DATA_HOME/eclock/app.ron` (usually `~/.local/share/eclock/app.ron`)
 - **macOS:** `~/Library/Application Support/eclock/app.ron`
