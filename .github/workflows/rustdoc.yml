@@ -1,0 +1,30 @@
+name: Rust documentation
+
+on:
+  pull_request:
+    paths:
+      - 'src/**/*.rs'
+      - '.github/workflows/rustdoc.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**/*.rs'
+      - '.github/workflows/rustdoc.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustdoc-checker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install rustdoc-checker
+        run: cargo install --git https://github.com/pszemraj/rustdoc-checker.git --tag v0.1.1 --locked
+      - name: Check Rust documentation
+        run: rustdoc-checker src --strict
