@@ -512,21 +512,28 @@ impl ClockLayout {
         let date = caption(
             painter,
             &now.format("%A, %B %-d, %Y").to_string().to_uppercase(),
-            (short_side * 0.045).clamp(14.0, 24.0),
-            FG.gamma_multiply(0.65),
+            (short_side * 0.045).max(18.0),
+            FG.gamma_multiply(0.8),
             0.8,
             width,
         );
         let zone = caption(
             painter,
             &now.format("%Z").to_string(),
-            (short_side * 0.035).clamp(12.0, 18.0),
-            FG.gamma_multiply(0.5),
+            (short_side * 0.035).max(16.0),
+            FG.gamma_multiply(0.7),
             0.8,
             width,
         );
         let hint = settings.show_hint.then(|| {
-            let text = caption(painter, HINT, 12.0, FG.gamma_multiply(0.4), 0.0, width);
+            let text = caption(
+                painter,
+                HINT,
+                (short_side * 0.025).max(14.0),
+                FG.gamma_multiply(0.65),
+                0.0,
+                width,
+            );
             let rect = Rect::from_min_size(
                 Pos2::new(
                     body.center().x - text.size().x / 2.0,

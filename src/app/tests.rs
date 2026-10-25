@@ -7,13 +7,14 @@ use eframe::{App, Storage};
 
 use super::*;
 
-const VIEWPORT_SIZES: [[f32; 2]; 6] = [
+const VIEWPORT_SIZES: [[f32; 2]; 7] = [
     [320.0, 200.0],
     [480.0, 320.0],
     [900.0, 520.0],
     [1440.0, 760.0],
     [480.0, 2496.0],
     [2560.0, 400.0],
+    [1400.0, 1332.0],
 ];
 
 #[derive(Default)]
@@ -131,6 +132,30 @@ fn full_clock_fits_small_tiles_and_large_windows_at_all_zoom_limits() {
             }
         }
     }
+}
+
+#[test]
+fn large_window_captions_use_large_fonts() {
+    let ctx = egui::Context::default();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 1332.0));
+    let _ = run_headless(
+        &ctx,
+        egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        },
+        |ui| {
+            let layout = ClockLayout::new(ui.painter(), rect, example_time(), &Settings::default());
+            for (text, minimum_size) in [
+                (&layout.date, 40.0),
+                (&layout.zone, 32.0),
+                (&layout.hint.as_ref().unwrap().0, 24.0),
+            ] {
+                assert!(text.job.sections[0].format.font_id.size >= minimum_size);
+                check_layout(&layout, rect);
+            }
+        },
+    );
 }
 
 #[test]
